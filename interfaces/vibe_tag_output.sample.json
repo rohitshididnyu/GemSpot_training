@@ -1,0 +1,15 @@
+{
+  "destination_id": "dest_01025",
+  "predicted_vibe_tags": [
+    {
+      "label": "scenic",
+      "score": 0.91
+    },
+    {
+      "label": "relaxing",
+      "score": 0.82
+    }
+  ],
+  "model_name": "GemSpotVibeTagger",
+  "model_version": "baseline_text_classifier_v1"
+}

@@ -1,0 +1,13 @@
+{
+  "request_id": "req_0001",
+  "destination_id": "dest_01025",
+  "will_visit_probability": 0.8421,
+  "recommend": 1,
+  "model_name": "GemSpotWillVisit",
+  "model_version": "logistic_regression_baseline",
+  "top_signals": [
+    "strong scenic preference match",
+    "high average rating",
+    "short travel distance"
+  ]
+}
