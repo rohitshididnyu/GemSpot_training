@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -75,6 +76,8 @@ def build_estimator(kind: str, params: dict[str, Any]) -> Any:
         return RandomForestClassifier(**params)
     if kind == "hist_gradient_boosting":
         return HistGradientBoostingClassifier(**params)
+    if kind == "xgboost":
+        return XGBClassifier(**params)
     raise ValueError(f"Unsupported model kind: {kind}")
 
 
