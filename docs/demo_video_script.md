@@ -57,6 +57,15 @@ Open one run and point to:
 
 Then say why you think it is promising.
 
+## Optional Bonus Clip
+
+If you use the ML6.2 bonus path, add a short extra clip showing:
+
+- the Ray dashboard
+- the Ray Tune job output with multiple trials
+- checkpoint files appearing in storage
+- if applicable, a worker/container restart followed by resumed progress
+
 ## What To Say In One Sentence
 
 "For the GemSpot training subsystem, I trained multiple recommendation candidates in Docker on Chameleon, tracked every run in MLflow, and compared quality and cost so the team can choose a model instead of shipping a single untracked model file."

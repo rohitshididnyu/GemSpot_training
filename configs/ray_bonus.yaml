@@ -1,0 +1,86 @@
+dataset:
+  target_column: will_visit
+  numeric_features:
+    - total_visits_30d
+    - saved_places_30d
+    - scenic_pref
+    - relaxing_pref
+    - foodie_pref
+    - nightlife_pref
+    - num_reviews
+    - place_popularity
+    - avg_rating
+    - distance_km
+    - month
+  categorical_features:
+    - category
+    - region
+    - vibe_tag
+    - day_of_week
+  text_features:
+    - services
+    - review_text
+
+base_params:
+  objective: binary:logistic
+  eval_metric:
+    - logloss
+    - auc
+    - aucpr
+  tree_method: hist
+  learning_rate: 0.08
+  max_depth: 8
+  min_child_weight: 2
+  subsample: 0.9
+  colsample_bytree: 0.8
+  reg_lambda: 1.0
+  reg_alpha: 0.0
+  num_boost_round: 200
+
+ray_train:
+  num_workers: 2
+  cpu_per_worker: 4
+  gpu_per_worker: 0.0
+  use_gpu: false
+  checkpoint_frequency: 25
+  max_failures: 2
+  storage_path: s3://ray
+
+ray_tune:
+  num_samples: 16
+  max_concurrent_trials: 4
+  metric: validation_aucpr
+  mode: max
+  cpu_per_trial: 4
+  gpu_per_trial: 0.0
+  report_every: 10
+  grace_period: 1
+  reduction_factor: 2
+
+search_space:
+  max_depth:
+    type: choice
+    values: [4, 6, 8, 10]
+  min_child_weight:
+    type: choice
+    values: [1, 2, 4]
+  subsample:
+    type: uniform
+    lower: 0.6
+    upper: 1.0
+  colsample_bytree:
+    type: uniform
+    lower: 0.6
+    upper: 1.0
+  learning_rate:
+    type: loguniform
+    lower: 0.01
+    upper: 0.2
+  reg_lambda:
+    type: loguniform
+    lower: 0.001
+    upper: 10.0
+  reg_alpha:
+    type: loguniform
+    lower: 0.0001
+    upper: 1.0

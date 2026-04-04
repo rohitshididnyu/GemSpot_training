@@ -1,0 +1,2 @@
+-r requirements.txt
+ray[default,tune,train]==2.54.0

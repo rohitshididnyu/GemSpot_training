@@ -73,3 +73,16 @@ def collect_environment_info() -> dict[str, Any]:
     }
     info.update(get_gpu_info())
     return info
+
+
+def get_command_output(command: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""

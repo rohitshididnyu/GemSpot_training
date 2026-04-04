@@ -13,7 +13,13 @@ import yaml
 
 from gemspot_training.data import make_dataset_bundle
 from gemspot_training.training import build_pipeline, compute_binary_metrics
-from gemspot_training.utils import collect_environment_info, ensure_dir, flatten_dict, get_git_sha
+from gemspot_training.utils import (
+    collect_environment_info,
+    ensure_dir,
+    flatten_dict,
+    get_command_output,
+    get_git_sha,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         "--experiment-name",
         default=None,
         help="Optional MLflow experiment name override.",
+    )
+    parser.add_argument(
+        "--tracking-uri",
+        default=None,
+        help="Optional MLflow tracking URI override. If omitted, MLflow uses the environment.",
     )
     parser.add_argument(
         "--artifact-dir",
@@ -53,7 +64,7 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
     pipeline = build_pipeline(candidate_cfg, dataset_cfg)
 
     run_name = f"{run_prefix}-{candidate_cfg['name']}"
-    with mlflow.start_run(run_name=run_name):
+    with mlflow.start_run(run_name=run_name, log_system_metrics=True):
         mlflow.set_tags(
             {
                 "project": "GemSpot",
@@ -69,6 +80,10 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
 
         for key, value in collect_environment_info().items():
             mlflow.log_param(f"environment.{key}", value)
+
+        nvidia_smi_output = get_command_output(["nvidia-smi"])
+        if nvidia_smi_output:
+            mlflow.log_text(nvidia_smi_output, "environment/nvidia_smi.txt")
 
         train_start = time.perf_counter()
         pipeline.fit(dataset_bundle.train_features, dataset_bundle.train_target)
@@ -111,6 +126,9 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+
+    if args.tracking_uri:
+        mlflow.set_tracking_uri(args.tracking_uri)
 
     experiment_name = args.experiment_name or config.get("experiment_name", "GemSpot-WillVisit")
     mlflow.set_experiment(experiment_name)

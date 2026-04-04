@@ -74,6 +74,16 @@ What course staff should be able to do:
 - compare metrics
 - download artifacts
 
+## B2. Bonus Items If You Use The ML6.2 Path
+
+If you plan to claim bonus credit for the Ray path, prepare evidence for these:
+
+- Ray dashboard screenshot or video segment
+- checkpoint files visible in object storage or MinIO
+- job submission command and successful completion logs
+- if demonstrating fault tolerance, evidence that a resumed job continued after worker interruption
+- short explanation of how Ray improved robustness or tuning efficiency for GemSpot
+
 ## C. What Must Be True To Get Credit
 
 Make sure all of these are true:
@@ -100,6 +110,7 @@ If there is a free-text explanation box, paste:
 - the repo URL
 - the exact commit SHA you want graded
 - a sentence explaining which run or runs are your best candidates
+- if claiming bonus, a sentence explaining which Ray run demonstrates robustness or early-stopping benefits
 
 ## E. Final 5-Minute Sanity Check
 

@@ -13,6 +13,22 @@ It is designed to satisfy the initial implementation rubric for the training sub
 
 The primary model implemented here is the `will_visit` recommender/classifier described in the GemSpot proposal.
 
+## New ML6 / ML6.2 Files
+
+To align this repo with your course labs, the repo now also includes:
+
+- `Dockerfile.jupyter-mlflow`: ML6-style Jupyter container for running GemSpot experiments
+- `requirements-jupyter.txt`: dependencies for the Jupyter container
+- `requirements-ray.txt`: dependencies for the Ray bonus path
+- `ray-runtime.json`: runtime env file for `ray job submit`
+- `src/train_ray_xgboost.py`: Ray Train bonus path
+- `src/train_ray_tune.py`: Ray Tune bonus path
+- `configs/ray_bonus.yaml`: Ray bonus configuration
+- `scripts/start_ml6_jupyter_container.sh`: start the ML6-style Jupyter container
+- `scripts/submit_ray_tune_job.sh`: submit the ML6.2-style tuning job
+- `docs/ml6_start_to_finish.md`: main ML6 path from start to finish
+- `docs/ml62_bonus_workflow.md`: bonus ML6.2 path from start to finish
+
 ## Use This Workflow For The Course
 
 Because you already ran [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf), treat the MLflow server as already provisioned.
@@ -45,6 +61,12 @@ export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
 4. On that training machine, follow the ML5-style container setup steps below.
 5. Build this repo’s Docker image, generate demo data, and run training.
 6. Refresh the MLflow UI and confirm the runs appear.
+
+If you want the exact lab-to-project mapping, read these in order:
+
+1. [docs/ml6_start_to_finish.md](/Users/rohitshidid/Documents/New%20project/docs/ml6_start_to_finish.md)
+2. [docs/ml62_bonus_workflow.md](/Users/rohitshidid/Documents/New%20project/docs/ml62_bonus_workflow.md)
+3. [docs/submission_checklist.md](/Users/rohitshidid/Documents/New%20project/docs/submission_checklist.md)
 
 ## Course-Aligned Chameleon Training Flow
 
@@ -297,6 +319,63 @@ Also, your course instructions require the project ID to appear as a suffix in r
 
 Do not use the example notebook names verbatim if they put the project ID at the front.
 
+## ML6 Summary
+
+For the main graded training workflow, treat the labs this way:
+
+- `mlflow_setup.pdf`: create and keep the tracking server alive
+- `ML6.pdf`: use a separate training machine or Jupyter/training container to run GemSpot code against that MLflow server
+
+The fastest ML6-aligned route in this repo is:
+
+```bash
+export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
+export DOCKER_EXTRA_ARGS="--gpus all"
+bash scripts/start_ml6_jupyter_container.sh
+docker exec gemspot-jupyter jupyter server list
+```
+
+Then inside the Jupyter terminal:
+
+```bash
+cd /home/jovyan/work
+python scripts/make_demo_dataset.py --output-dir data/demo
+PYTHONPATH=src python src/train.py \
+  --config configs/candidates.yaml \
+  --train-csv data/demo/gemspot_train.csv \
+  --val-csv data/demo/gemspot_val.csv \
+  --experiment-name GemSpot-WillVisit \
+  --tracking-uri "${MLFLOW_TRACKING_URI}"
+```
+
+## ML6.2 Bonus Summary
+
+For the bonus path, treat `ML6.2.pdf` as a Ray scheduling and robustness workflow:
+
+- bring up a Ray cluster on Chameleon
+- start a Jupyter submission container
+- submit GemSpot jobs with `ray job submit`
+- use checkpoints and ASHA to make tuning more robust and efficient
+
+The simplest bonus command in this repo is:
+
+```bash
+cd ~/work
+export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
+bash scripts/submit_ray_tune_job.sh
+```
+
+For a stronger robustness story, also run:
+
+```bash
+python src/train_ray_xgboost.py \
+  --config configs/ray_bonus.yaml \
+  --train-csv data/demo/gemspot_train.csv \
+  --val-csv data/demo/gemspot_val.csv \
+  --storage-path s3://ray \
+  --tracking-uri "${MLFLOW_TRACKING_URI}"
+```
+
 ## Docker Workflow
 
 Build the image:
@@ -329,6 +408,8 @@ docker run --rm \
 ## What To Read Next
 
 - `docs/chameleon_steps.md`
+- `docs/ml6_start_to_finish.md`
+- `docs/ml62_bonus_workflow.md`
 - `docs/submission_checklist.md`
 - `docs/demo_video_script.md`
 - `docs/run_table_template.md`
