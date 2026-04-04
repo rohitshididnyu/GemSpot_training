@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
@@ -132,6 +133,9 @@ def main() -> None:
 
     experiment_name = args.experiment_name or config.get("experiment_name", "GemSpot-WillVisit")
     mlflow.set_experiment(experiment_name)
+
+    os.environ.setdefault("MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL", "1")
+    os.environ.setdefault("MLFLOW_SYSTEM_METRICS_SAMPLES_BEFORE_LOGGING", "1")
     mlflow.enable_system_metrics_logging()
 
     artifact_dir = ensure_dir(args.artifact_dir)
