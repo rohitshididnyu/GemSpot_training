@@ -13,6 +13,206 @@ It is designed to satisfy the initial implementation rubric for the training sub
 
 The primary model implemented here is the `will_visit` recommender/classifier described in the GemSpot proposal.
 
+## Use This Workflow For The Course
+
+Because you already ran [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf), treat the MLflow server as already provisioned.
+
+For training and testing the model, follow the infrastructure pattern from [ML5.pdf](/Users/rohitshidid/Downloads/ML5.pdf):
+
+- use the existing MLflow server from `mlflow_setup.pdf`
+- use the `ML5` single-GPU Chameleon flow for the training machine
+- use Docker containers to run and test the model
+- if you are on a GPU machine, verify container GPU access with `docker run --rm --gpus all ubuntu nvidia-smi`
+
+Important:
+
+- `mlflow_setup.pdf` is for the tracking server
+- `ML5.pdf` is for the training machine workflow
+- unlike ML5, you do not need the BLIP notebooks or Jupyter container for GemSpot
+- we reuse the ML5 server setup pattern, Docker pattern, and GPU verification pattern, but we run `src/train.py` from this repo instead
+- this starter model is scikit-learn based, so it does not require a GPU, but it is still fine to run it on a GPU VM if that is the workflow your course expects
+
+## What To Do Now
+
+1. Keep the MLflow server from [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf) running.
+2. Note the MLflow URL from that notebook:
+
+```bash
+export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
+```
+
+3. Bring up a training machine using the `ML5` single-GPU pattern.
+4. On that training machine, follow the ML5-style container setup steps below.
+5. Build this repo’s Docker image, generate demo data, and run training.
+6. Refresh the MLflow UI and confirm the runs appear.
+
+## Course-Aligned Chameleon Training Flow
+
+This is the recommended path for your actual project work.
+
+### A. MLflow Server
+
+You already handled this with [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf).
+
+That means:
+
+- MLflow is already running on a Chameleon VM
+- it is backed by PostgreSQL on a persistent volume
+- artifacts are stored in CHI@TACC object storage
+- the UI is on port `8000`
+
+Do not start a second local MLflow for grading. Reuse the one you already created.
+
+### B. Training Server Using The ML5 Pattern
+
+Use [ML5.pdf](/Users/rohitshidid/Downloads/ML5.pdf) as the model for how to bring up and prepare the training machine:
+
+- bring up a Chameleon training server
+- clone code onto the server
+- install Docker
+- install the NVIDIA container toolkit if you are using a GPU server
+- verify the GPU is visible inside Docker
+- build the training image
+- run the model inside a container with a mounted workspace
+
+When adapting ML5, do not keep the notebook’s default resource names like `node-llm-single-<username>`.
+
+Your training resources should also use the project suffix rule, for example:
+
+- lease: `gemspot-train-lease-proj99`
+- server: `gemspot-train-server-proj99`
+- volume, if any: `gemspot-train-data-proj99`
+
+For GemSpot, adapt the ML5 flow like this after you SSH into the training machine:
+
+```bash
+git clone <your-repo-url> gemspot
+cd gemspot
+```
+
+Install Docker:
+
+```bash
+curl -sSL https://get.docker.com/ | sudo sh
+sudo groupadd -f docker
+sudo usermod -aG docker "$USER"
+newgrp docker
+docker run hello-world
+```
+
+If this is a GPU machine, install the NVIDIA container toolkit using the ML5 pattern:
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt update
+sudo apt-get install -y nvidia-container-toolkit jq
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo jq 'if has("exec-opts") then . else . + {"exec-opts": ["native.cgroupdriver=cgroupfs"]} end' \
+  /etc/docker/daemon.json | \
+  sudo tee /etc/docker/daemon.json.tmp > /dev/null
+sudo mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json
+sudo systemctl restart docker
+```
+
+Test GPU access exactly like ML5:
+
+```bash
+docker run --rm --gpus all ubuntu nvidia-smi
+```
+
+If you are using a CPU VM instead, skip the NVIDIA toolkit and `--gpus all` commands.
+
+### C. Build The GemSpot Image
+
+This follows the same “build the container on the Chameleon machine” pattern as ML5:
+
+```bash
+export PROJECT_SUFFIX=proj99
+docker build -t gemspot-train-${PROJECT_SUFFIX} .
+```
+
+### D. Generate Demo Data Inside The Container
+
+This keeps the workflow container-first, which is closer to ML5:
+
+```bash
+docker run --rm \
+  -v "$(pwd):/app" \
+  gemspot-train-${PROJECT_SUFFIX} \
+  python scripts/make_demo_dataset.py --output-dir data/demo
+```
+
+### E. Run Training Inside Docker And Log To Your Existing MLflow Server
+
+If you are on a GPU server:
+
+```bash
+export DOCKER_EXTRA_ARGS="--gpus all"
+export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
+bash scripts/run_training_container.sh
+```
+
+If you are on a CPU server:
+
+```bash
+unset DOCKER_EXTRA_ARGS
+export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
+bash scripts/run_training_container.sh
+```
+
+This script now supports:
+
+- `DOCKER_EXTRA_ARGS` for ML5-style GPU flags
+- `TRAIN_CSV` and `VAL_CSV` overrides for real data
+- `EXPERIMENT_NAME` override
+
+Example with real data:
+
+```bash
+export DOCKER_EXTRA_ARGS="--gpus all"
+export TRAIN_CSV=data/processed/gemspot_train.csv
+export VAL_CSV=data/processed/gemspot_val.csv
+export EXPERIMENT_NAME=GemSpot-WillVisit
+export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
+bash scripts/run_training_container.sh
+```
+
+### F. Test That Everything Worked
+
+1. Watch the training logs in the terminal.
+2. Open the MLflow UI from `mlflow_setup.pdf`.
+3. Verify that one run appears for each candidate in `configs/candidates.yaml`.
+4. Open a run and confirm it contains:
+
+- parameters
+- metrics
+- exported model artifact
+- run summary JSON
+
+### G. What From ML5 We Reused
+
+We are reusing these parts of [ML5.pdf](/Users/rohitshidid/Downloads/ML5.pdf):
+
+- Chameleon training server workflow
+- Docker-first execution pattern
+- NVIDIA container toolkit installation
+- `docker run --rm --gpus all ubuntu nvidia-smi` GPU verification
+- building the image directly on the Chameleon machine
+- running the model from inside a container with a mounted workspace
+- the general order: provision server, validate container runtime, then run the training workload
+
+We are not reusing these parts:
+
+- BLIP-2 model code
+- Jupyter notebook training workflow
+- the `single/` and `multi/` lab code itself
+
 ## Repository Layout
 
 - `src/train.py`: main training entrypoint
@@ -110,8 +310,7 @@ Run training inside Docker:
 ```bash
 docker run --rm \
   -e MLFLOW_TRACKING_URI=http://127.0.0.1:5000 \
-  -v "$(pwd)/data:/app/data" \
-  -v "$(pwd)/artifacts:/app/artifacts" \
+  -v "$(pwd):/app" \
   gemspot-train-proj99 \
   python src/train.py \
     --config configs/candidates.yaml \

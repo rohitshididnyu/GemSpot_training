@@ -6,6 +6,8 @@ Important:
 
 - for the graded MLflow service, follow the setup pattern in [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf)
 - that handout uses PostgreSQL plus CHI@TACC object storage and serves MLflow on port `8000`
+- treat `mlflow_setup.pdf` as already completed if you have already run it
+- follow [ML5.pdf](/Users/rohitshidid/Downloads/ML5.pdf) for the training machine workflow
 - the simplified script in this repo is only for local testing
 - adapt all resource names so your project ID is a suffix, even if the notebook examples use it as a prefix
 
@@ -39,6 +41,7 @@ More scalable path:
 - one separate training VM
 
 For this starter repo, the fastest path is usually enough.
+
 1. MLflow machine
 - small or medium general-purpose VM
 - persistent storage volume attached
@@ -49,6 +52,8 @@ For this starter repo, the fastest path is usually enough.
 - the smallest machine that comfortably runs your training job
 - for this starter, a CPU VM is enough because the provided models are scikit-learn models
 - name example: `gemspot-train-server-proj99`
+
+If your course staff expects you to follow the GPU workflow from `ML5`, use a GPU training machine and the ML5 container setup steps anyway. The model will still run correctly there.
 
 Important:
 
@@ -70,51 +75,17 @@ Use the notebook flow from [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflo
 
 ### On Chameleon
 
-1. Create the VM.
-2. Attach a persistent volume.
-3. Associate a floating IP.
-4. SSH into the machine:
-
-```bash
-ssh cc@YOUR_FLOATING_IP
-```
-
-If your image uses a different username, use that instead.
-
-### Install Docker
-
-```bash
-sudo apt update
-sudo apt install -y docker.io git
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"
-newgrp docker
-```
-
-### Clone your repo
-
-```bash
-git clone <your-repo-url> gemspot
-cd gemspot
-```
-
-### Start MLflow
-
-Decide on a persistent mount path. Example:
-
-```bash
 Run the notebook-equivalent setup from the PDF so that:
 
 - PostgreSQL data lives on the mounted volume
 - artifacts go to CHI@TACC object storage
 - the MLflow UI is available on port `8000`
-```
 
 Check that it is running:
 
 ```bash
 docker ps
-curl http://127.0.0.1:5000
+curl http://127.0.0.1:8000
 ```
 
 In your browser, open:
@@ -131,7 +102,21 @@ Keep this URL. You need it for:
 
 ## 4. Prepare the Training Machine
 
-If you use a second machine for training, a normal CPU VM is enough for this starter code.
+If you use a second machine for training, follow the training-machine pattern from `ML5.pdf`.
+
+That means:
+
+- bring up the training machine
+- install Docker
+- if it is a GPU node, install NVIDIA container toolkit
+- test with `docker run --rm --gpus all ubuntu nvidia-smi`
+- build and run your training image on that machine
+
+Important:
+
+- if you adapt the ML5 notebook, change its default resource names
+- do not leave names like `node-llm-single-<username>`
+- use names with your project suffix, for example `gemspot-train-server-proj99` and `gemspot-train-lease-proj99`
 
 SSH into the training machine:
 
@@ -142,11 +127,11 @@ ssh cc@TRAINING_MACHINE_IP
 Install Docker and Git:
 
 ```bash
-sudo apt update
-sudo apt install -y docker.io git
-sudo systemctl enable --now docker
+curl -sSL https://get.docker.com/ | sudo sh
+sudo groupadd -f docker
 sudo usermod -aG docker "$USER"
 newgrp docker
+docker run hello-world
 ```
 
 Clone your repo:
@@ -156,11 +141,46 @@ git clone <your-repo-url> gemspot
 cd gemspot
 ```
 
+If this is a GPU server, install the NVIDIA container toolkit using the ML5 flow:
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt update
+sudo apt-get install -y nvidia-container-toolkit jq
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo jq 'if has("exec-opts") then . else . + {"exec-opts": ["native.cgroupdriver=cgroupfs"]} end' \
+  /etc/docker/daemon.json | \
+  sudo tee /etc/docker/daemon.json.tmp > /dev/null
+sudo mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json
+sudo systemctl restart docker
+
+docker run --rm --gpus all ubuntu nvidia-smi
+```
+
 ## 5. Create the Dataset
 
 For your graded project, you should replace the synthetic demo data with your real processed GemSpot training data.
 
-But to get unstuck immediately and validate the pipeline, first create the demo dataset:
+But to get unstuck immediately and validate the pipeline, first create the demo dataset.
+
+If you want to stay close to the ML5 container-first workflow, generate the demo data inside Docker:
+
+```bash
+export PROJECT_SUFFIX=proj99
+docker build -t gemspot-train-${PROJECT_SUFFIX} .
+docker run --rm \
+  -v "$(pwd):/app" \
+  gemspot-train-${PROJECT_SUFFIX} \
+  python scripts/make_demo_dataset.py --output-dir data/demo
+```
+
+If you prefer to do it on the host, this also works:
 
 ```bash
 python3 -m venv .venv
@@ -184,6 +204,14 @@ export MLFLOW_TRACKING_URI=http://YOUR_FLOATING_IP:8000
 Build and run:
 
 ```bash
+export DOCKER_EXTRA_ARGS="--gpus all"
+bash scripts/run_training_container.sh
+```
+
+If you are on a CPU-only training VM, unset the GPU flag:
+
+```bash
+unset DOCKER_EXTRA_ARGS
 bash scripts/run_training_container.sh
 ```
 
