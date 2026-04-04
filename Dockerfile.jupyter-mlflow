@@ -6,6 +6,7 @@ ENV PYTHONPATH=/home/jovyan/work/src
 
 WORKDIR /home/jovyan/work
 
+COPY requirements.txt /tmp/requirements.txt
 COPY requirements-jupyter.txt /tmp/requirements-jupyter.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r /tmp/requirements-jupyter.txt
