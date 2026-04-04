@@ -1,3 +1,9 @@
+"""Model building, preprocessing pipeline, and metric computation for GemSpot.
+
+After data.py explodes the list-encoded columns, every feature is numeric.
+The preprocessor is therefore a simple impute -> scale pipeline applied to
+all columns uniformly.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -7,8 +13,6 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
-from xgboost import XGBClassifier
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -20,52 +24,27 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
 
 
-def _text_to_series(values: pd.DataFrame | np.ndarray | list[str]) -> pd.Series:
-    if isinstance(values, pd.DataFrame):
-        return values.iloc[:, 0].fillna("").astype(str)
-    if isinstance(values, np.ndarray):
-        flattened = values.reshape(-1)
-        return pd.Series(flattened).fillna("").astype(str)
-    return pd.Series(values).fillna("").astype(str)
+# ---------------------------------------------------------------------------
+# Preprocessor
+# ---------------------------------------------------------------------------
 
-
-def build_preprocessor(dataset_cfg: dict) -> ColumnTransformer:
-    numeric_pipeline = Pipeline(
+def build_preprocessor(feature_columns: list[str]) -> Pipeline:
+    """Build a simple numeric preprocessor: impute missing -> scale."""
+    return Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
         ]
     )
 
-    categorical_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            (
-                "encoder",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-            ),
-        ]
-    )
 
-    text_pipeline = Pipeline(
-        steps=[
-            ("to_series", FunctionTransformer(_text_to_series, validate=False)),
-            ("tfidf", TfidfVectorizer(max_features=250, ngram_range=(1, 2))),
-        ]
-    )
-
-    return ColumnTransformer(
-        transformers=[
-            ("numeric", numeric_pipeline, dataset_cfg["numeric_features"]),
-            ("categorical", categorical_pipeline, dataset_cfg["categorical_features"]),
-            ("text", text_pipeline, ["combined_text"]),
-        ],
-        sparse_threshold=0.0,
-    )
-
+# ---------------------------------------------------------------------------
+# Estimator factory
+# ---------------------------------------------------------------------------
 
 def build_estimator(kind: str, params: dict[str, Any]) -> Any:
     if kind == "dummy":
@@ -81,16 +60,29 @@ def build_estimator(kind: str, params: dict[str, Any]) -> Any:
     raise ValueError(f"Unsupported model kind: {kind}")
 
 
-def build_pipeline(candidate_cfg: dict, dataset_cfg: dict) -> Pipeline:
+# ---------------------------------------------------------------------------
+# Full pipeline
+# ---------------------------------------------------------------------------
+
+def build_pipeline(candidate_cfg: dict, feature_columns: list[str]) -> Pipeline:
+    """Build preprocessor + estimator pipeline."""
     return Pipeline(
         steps=[
-            ("preprocessor", build_preprocessor(dataset_cfg)),
+            ("preprocessor", build_preprocessor(feature_columns)),
             ("model", build_estimator(candidate_cfg["kind"], candidate_cfg.get("params", {}))),
         ]
     )
 
 
-def compute_binary_metrics(y_true: pd.Series, y_pred: np.ndarray, y_score: np.ndarray) -> dict[str, float]:
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+def compute_binary_metrics(
+    y_true: pd.Series,
+    y_pred: np.ndarray,
+    y_score: np.ndarray,
+) -> dict[str, float]:
     metrics = {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),

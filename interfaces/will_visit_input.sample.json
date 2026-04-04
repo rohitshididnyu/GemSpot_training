@@ -1,36 +1,12 @@
 {
-  "request_id": "req_0001",
-  "user": {
-    "user_id": "user_0042",
-    "preference_scores": {
-      "scenic": 0.86,
-      "relaxing": 0.72,
-      "foodie": 0.35,
-      "nightlife": 0.10
-    },
-    "recent_activity": {
-      "total_visits_30d": 11,
-      "saved_places_30d": 4
-    }
-  },
-  "candidate_place": {
-    "destination_id": "dest_01025",
-    "category": "park",
-    "region": "hudson_valley",
-    "vibe_tag": "scenic",
-    "services": [
-      "trails",
-      "lake_view",
-      "picnic_area"
-    ],
-    "num_reviews": 824,
-    "place_popularity": 0.71,
-    "avg_rating": 4.7,
-    "distance_km": 36.4,
-    "review_text": "Beautiful views and quiet atmosphere. Great for a peaceful day trip."
-  },
-  "context": {
-    "day_of_week": "Saturday",
-    "month": 4
-  }
+  "user_id": 1.0897067790079882e+20,
+  "gmap_id": "0x87cc537a325fefff:0x8a525083e90ac254",
+  "time": 1631140000000.0,
+  "category": ["Restaurant", "Breakfast restaurant", "Lunch restaurant"],
+  "category_encoded": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+  "avg_rating": 4.7,
+  "location_popularity": 42,
+  "destination_vibe_tag": [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1],
+  "user_total_visits": 36,
+  "user_personal_preferences": [0.183, 0.255, 0.193, 0.136, 0.209, 0.178, 0.185, 0.219, 0.179, 0.233, 0.177, 0.298, 0.116, 0.172, 0.204, 0.129, 0.127, 0.162, 0.184, 0.293]
 }

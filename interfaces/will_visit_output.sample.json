@@ -1,13 +1,8 @@
 {
-  "request_id": "req_0001",
-  "destination_id": "dest_01025",
+  "user_id": 1.0897067790079882e+20,
+  "gmap_id": "0x87cc537a325fefff:0x8a525083e90ac254",
   "will_visit_probability": 0.8421,
   "recommend": 1,
   "model_name": "GemSpotWillVisit",
-  "model_version": "logistic_regression_baseline",
-  "top_signals": [
-    "strong scenic preference match",
-    "high average rating",
-    "short travel distance"
-  ]
+  "model_version": "xgboost_v1"
 }

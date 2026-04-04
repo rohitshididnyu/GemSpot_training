@@ -58,11 +58,11 @@ def safe_metric(value: float) -> float | None:
 
 
 def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_dir: Path) -> None:
-    dataset_cfg = config["dataset"]
     tracking_cfg = config.get("tracking", {})
     run_prefix = tracking_cfg.get("run_name_prefix", "gemspot")
 
-    pipeline = build_pipeline(candidate_cfg, dataset_cfg)
+    feature_columns = list(dataset_bundle.train_features.columns)
+    pipeline = build_pipeline(candidate_cfg, feature_columns)
 
     run_name = f"{run_prefix}-{candidate_cfg['name']}"
     with mlflow.start_run(run_name=run_name):
@@ -77,7 +77,8 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
         )
 
         mlflow.log_params(flatten_dict({"candidate": candidate_cfg}))
-        mlflow.log_params(flatten_dict({"dataset": dataset_cfg}))
+        mlflow.log_param("dataset.target_column", config["dataset"]["target_column"])
+        mlflow.log_param("dataset.num_features", len(feature_columns))
 
         for key, value in collect_environment_info().items():
             mlflow.log_param(f"environment.{key}", value)

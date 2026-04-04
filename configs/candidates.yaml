@@ -2,72 +2,72 @@ experiment_name: GemSpot-WillVisit
 
 dataset:
   target_column: will_visit
-  numeric_features:
-    - total_visits_30d
-    - saved_places_30d
-    - scenic_pref
-    - relaxing_pref
-    - foodie_pref
-    - nightlife_pref
-    - num_reviews
-    - place_popularity
+
+  # Columns to drop before training (IDs and redundant raw text)
+  drop_columns:
+    - user_id
+    - gmap_id
+    - category   # redundant: already encoded in category_encoded
+
+  # Plain numeric columns kept as-is
+  scalar_numeric_features:
     - avg_rating
-    - distance_km
-    - month
-  categorical_features:
-    - category
-    - region
-    - vibe_tag
-    - day_of_week
-  text_features:
-    - services
-    - review_text
+    - location_popularity
+    - user_total_visits
+    - time
+
+  # List-encoded string columns -> exploded into N individual numeric columns
+  list_encoded_features:
+    category_encoded:
+      length: 21          # 21 category types (0=Restaurant ... 20=Other)
+      prefix: cat_enc
+    destination_vibe_tag:
+      length: 20          # 20 binary vibe dimensions
+      prefix: vibe
+    user_personal_preferences:
+      length: 20          # 20 float preference scores per vibe dim
+      prefix: user_pref
+
+  # Element-wise interaction features (pref[i] * vibe[i])
+  interaction_features:
+    - a: user_pref
+      b: vibe
+      prefix: pref_x_vibe
 
 tracking:
   registered_model_name: GemSpotWillVisit
   run_name_prefix: gemspot-will-visit
 
 candidates:
+  # ---- SIMPLE BASELINE (required by rubric) ----
   - name: dummy_most_frequent
     kind: dummy
-    notes: Simple lower-bound baseline.
+    notes: Naive lower-bound baseline. Always predicts majority class (will_visit=1).
     params:
       strategy: most_frequent
 
-  - name: logistic_regression_baseline
-    kind: logistic_regression
-    notes: Strong simple baseline for tabular plus text features.
+  # ---- XGBOOST BASELINE (default params) ----
+  - name: xgboost_baseline
+    kind: xgboost
+    notes: XGBoost with default/conservative params. Starting point before tuning.
     params:
-      C: 1.0
-      class_weight: balanced
-      max_iter: 500
-      solver: liblinear
-
-  - name: random_forest_v1
-    kind: random_forest
-    notes: Non-linear model that can capture feature interactions.
-    params:
-      n_estimators: 300
-      max_depth: 16
-      min_samples_leaf: 2
+      learning_rate: 0.3
+      max_depth: 6
+      n_estimators: 100
+      scale_pos_weight: 1.0
       random_state: 42
       n_jobs: -1
 
-  - name: hist_gradient_boosting_v1
-    kind: hist_gradient_boosting
-    notes: Faster boosting-style candidate for better quality-cost tradeoffs.
-    params:
-      learning_rate: 0.08
-      max_depth: 8
-      max_iter: 250
-      random_state: 42
-
+  # ---- XGBOOST V1 (tuned for imbalanced data) ----
   - name: xgboost_v1
     kind: xgboost
-    notes: Advanced boosting candidate using XGBoost.
+    notes: Tuned XGBoost. Lower learning rate, deeper trees, scale_pos_weight for class imbalance.
     params:
       learning_rate: 0.1
-      max_depth: 10
+      max_depth: 8
       n_estimators: 200
+      scale_pos_weight: 4.7
+      subsample: 0.9
+      colsample_bytree: 0.8
       random_state: 42
       n_jobs: -1
