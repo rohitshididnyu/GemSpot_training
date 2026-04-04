@@ -64,7 +64,7 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
     pipeline = build_pipeline(candidate_cfg, dataset_cfg)
 
     run_name = f"{run_prefix}-{candidate_cfg['name']}"
-    with mlflow.start_run(run_name=run_name, log_system_metrics=True):
+    with mlflow.start_run(run_name=run_name):
         mlflow.set_tags(
             {
                 "project": "GemSpot",
@@ -132,6 +132,7 @@ def main() -> None:
 
     experiment_name = args.experiment_name or config.get("experiment_name", "GemSpot-WillVisit")
     mlflow.set_experiment(experiment_name)
+    mlflow.enable_system_metrics_logging()
 
     artifact_dir = ensure_dir(args.artifact_dir)
     dataset_bundle = make_dataset_bundle(args.train_csv, args.val_csv, config)

@@ -30,6 +30,15 @@ Examples:
 - security groups: `gemspot-allow-ssh-proj99`, `gemspot-allow-8888-proj99`
 
 If you are on a GPU VM, use the same Docker and NVIDIA container toolkit steps as ML6.
+1. Chameleon Security Group (Most Likely)
+By default, Chameleon blocks all incoming web traffic to protect your virtual machine. If you look at Section 2 of your docs/ml6_start_to_finish.md, it mentions creating a security group called gemspot-allow-8888-proj99.
+
+You likely need to configure this in the Chameleon Cloud Dashboard:
+
+Go to your Chameleon Dashboard (Horizon).
+Navigate to Network > Security Groups.
+Create a new security group (or edit an existing one) and add an Ingress Rule for TCP on Port 8888.
+Go to Compute > Instances, find your training server, and Attach this security group to the instance.
 
 ## 3. On The Training Server
 
@@ -159,7 +168,7 @@ Or use the Docker runner:
 
 ```bash
 cd /home/jovyan/work
-export PROJECT_SUFFIX=proj99
+export PROJECT_SUFFIX=proj10
 export DOCKER_EXTRA_ARGS="--gpus all"
 bash scripts/run_training_container.sh
 ```
@@ -188,7 +197,7 @@ Once the pipeline works, switch to your actual processed CSVs:
 
 ```bash
 cd /home/jovyan/work
-export PROJECT_SUFFIX=proj99
+export PROJECT_SUFFIX=proj10
 export TRAIN_CSV=data/processed/gemspot_train.csv
 export VAL_CSV=data/processed/gemspot_val.csv
 export EXPERIMENT_NAME=GemSpot-WillVisit
