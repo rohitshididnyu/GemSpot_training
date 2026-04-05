@@ -112,7 +112,33 @@ Best candidate: xgboost_v2 — highest avg precision (0.965) and recall (99.5%),
 handles 82/18 class imbalance with scale_pos_weight=4.7.
 ```
 
-## E. Final 5-Minute Sanity Check
+## E. Bonus: Ray Distributed Training (ML6.2)
+
+For bonus credit, include evidence of Ray-based distributed training:
+
+### What to submit
+
+- Screenshots of:
+  - Chameleon bare metal instance running
+  - `docker ps` showing Ray cluster (4 containers)
+  - Ray Dashboard (`http://RAY_IP:8265`) showing cluster and completed job
+  - MinIO Console (`http://RAY_IP:9001`) showing checkpoint files
+  - MLflow showing Ray Tune experiment runs
+  - Terminal output with best trial summary
+  - (Optional) Fault tolerance demo: worker killed and training recovered
+
+- In your PDF report, add a "Bonus" section explaining:
+  - What Ray does (distributed hyperparameter tuning with ASHA)
+  - How checkpointing and fault tolerance work
+  - Best trial results compared to your main xgboost_v2
+
+### Live services for bonus
+
+Keep these running until April 7 midnight alongside MLflow:
+- Ray Dashboard: `http://RAY_IP:8265`
+- MinIO Console: `http://RAY_IP:9001`
+
+## F. Final 5-Minute Sanity Check
 
 Right before submission, verify:
 

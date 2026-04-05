@@ -1,3 +1,8 @@
+"""Ray Tune hyperparameter search for GemSpot XGBoost.
+
+Runs ASHA early-stopping over an XGBoost search space, checkpoints to
+S3 (MinIO), and logs the best trial to MLflow.
+"""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +18,6 @@ import xgboost
 import yaml
 from ray import tune
 from ray.train import CheckpointConfig, FailureConfig, RunConfig
-from ray.tune import Checkpoint
 from ray.tune.schedulers import ASHAScheduler
 
 from gemspot_training.ray_data import make_xgboost_frame_bundle
@@ -22,48 +26,51 @@ from gemspot_training.utils import ensure_dir, flatten_dict, get_git_sha
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run GemSpot bonus tuning with Ray Tune + XGBoost.")
-    parser.add_argument("--config", default="configs/ray_bonus.yaml", help="Path to Ray bonus YAML config.")
-    parser.add_argument("--train-csv", required=True, help="Training CSV path.")
-    parser.add_argument("--val-csv", required=True, help="Validation CSV path.")
-    parser.add_argument("--ray-address", default=None, help="Optional Ray address. Defaults to RAY_ADDRESS or auto.")
-    parser.add_argument("--storage-path", default=None, help="Optional Ray storage path override.")
-    parser.add_argument("--tracking-uri", default=None, help="Optional MLflow tracking URI override.")
-    parser.add_argument("--experiment-name", default=None, help="Optional MLflow experiment override.")
-    parser.add_argument("--run-name", default="GemSpot-RayTune-XGBoost", help="Logical Tune experiment name.")
-    parser.add_argument("--artifact-dir", default="artifacts/ray_tune", help="Artifact export directory.")
-    parser.add_argument("--num-samples", type=int, default=None, help="Override Tune sample count.")
-    parser.add_argument("--max-concurrent-trials", type=int, default=None, help="Override max concurrent trials.")
-    parser.add_argument("--cpu-per-trial", type=float, default=None, help="Override CPUs per trial.")
-    parser.add_argument("--gpu-per-trial", type=float, default=None, help="Override GPUs per trial.")
-    parser.add_argument("--max-failures", type=int, default=None, help="Override failure retries.")
+    parser = argparse.ArgumentParser(description="GemSpot bonus: Ray Tune + XGBoost.")
+    parser.add_argument("--config", default="configs/ray_bonus.yaml")
+    parser.add_argument("--train-csv", required=True)
+    parser.add_argument("--val-csv", required=True)
+    parser.add_argument("--ray-address", default=None)
+    parser.add_argument("--storage-path", default=None)
+    parser.add_argument("--tracking-uri", default=None)
+    parser.add_argument("--experiment-name", default=None)
+    parser.add_argument("--run-name", default="GemSpot-RayTune-XGBoost")
+    parser.add_argument("--artifact-dir", default="artifacts/ray_tune")
+    parser.add_argument("--num-samples", type=int, default=None)
+    parser.add_argument("--max-concurrent-trials", type=int, default=None)
+    parser.add_argument("--cpu-per-trial", type=float, default=None)
+    parser.add_argument("--gpu-per-trial", type=float, default=None)
+    parser.add_argument("--max-failures", type=int, default=None)
     return parser.parse_args()
 
 
 def load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def build_search_space(search_space_cfg: dict) -> dict:
-    search_space = {}
+    space = {}
     for name, spec in search_space_cfg.items():
-        spec_type = spec["type"]
-        if spec_type == "choice":
-            search_space[name] = tune.choice(spec["values"])
-        elif spec_type == "uniform":
-            search_space[name] = tune.uniform(spec["lower"], spec["upper"])
-        elif spec_type == "loguniform":
-            search_space[name] = tune.loguniform(spec["lower"], spec["upper"])
-        elif spec_type == "randint":
-            search_space[name] = tune.randint(spec["lower"], spec["upper"])
+        t = spec["type"]
+        if t == "choice":
+            space[name] = tune.choice(spec["values"])
+        elif t == "uniform":
+            space[name] = tune.uniform(spec["lower"], spec["upper"])
+        elif t == "loguniform":
+            space[name] = tune.loguniform(spec["lower"], spec["upper"])
+        elif t == "randint":
+            space[name] = tune.randint(spec["lower"], spec["upper"])
         else:
-            raise ValueError(f"Unsupported search space type: {spec_type}")
-    return search_space
+            raise ValueError(f"Unknown search space type: {t}")
+    return space
 
 
 def train_trial(sampled_params: dict, static_cfg: dict) -> None:
-    bundle = make_xgboost_frame_bundle(static_cfg["train_csv"], static_cfg["val_csv"], static_cfg["config"])
+    """One Ray Tune trial: train XGBoost, report metrics, checkpoint."""
+    bundle = make_xgboost_frame_bundle(
+        static_cfg["train_csv"], static_cfg["val_csv"], static_cfg["config"]
+    )
 
     dtrain = xgboost.DMatrix(bundle.train_features, label=bundle.train_target)
     dval = xgboost.DMatrix(bundle.val_features, label=bundle.val_target)
@@ -73,38 +80,41 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     total_rounds = int(static_cfg["num_boost_round"])
     report_every = int(static_cfg["report_every"])
 
-    checkpoint = tune.get_checkpoint()
+    # Resume from checkpoint if available
+    checkpoint = ray.train.get_checkpoint()
     booster = None
     completed_rounds = 0
     if checkpoint:
-        with checkpoint.as_directory() as checkpoint_dir:
-            model_path = Path(checkpoint_dir) / "model.ubj"
-            metadata_path = Path(checkpoint_dir) / "metadata.json"
+        with checkpoint.as_directory() as ckpt_dir:
+            model_path = Path(ckpt_dir) / "model.ubj"
+            meta_path = Path(ckpt_dir) / "metadata.json"
             if model_path.exists():
                 booster = xgboost.Booster()
-                booster.load_model(model_path.as_posix())
-            if metadata_path.exists():
-                completed_rounds = int(json.loads(metadata_path.read_text(encoding="utf-8"))["completed_rounds"])
+                booster.load_model(str(model_path))
+            if meta_path.exists():
+                completed_rounds = int(
+                    json.loads(meta_path.read_text())["completed_rounds"]
+                )
 
     trial_id = os.getenv("TUNE_TRIAL_ID", "unknown")
+
+    # Optional MLflow logging per trial
     if static_cfg["tracking_uri"]:
         mlflow.set_tracking_uri(static_cfg["tracking_uri"])
         mlflow.set_experiment(static_cfg["experiment_name"])
         mlflow.start_run(run_name=f"ray-tune-trial-{trial_id}", log_system_metrics=True)
-        mlflow.set_tags(
-            {
-                "project": "GemSpot",
-                "workflow": "ray-tune-xgboost",
-                "trial_id": trial_id,
-                "code_version": get_git_sha(),
-            }
-        )
-        mlflow.log_params(flatten_dict({"sampled_params": sampled_params}))
+        mlflow.set_tags({
+            "project": "GemSpot",
+            "workflow": "ray-tune-xgboost",
+            "trial_id": trial_id,
+            "code_version": get_git_sha(),
+        })
+        mlflow.log_params(flatten_dict({"sampled": sampled_params}))
 
     try:
         while completed_rounds < total_rounds:
             chunk = min(report_every, total_rounds - completed_rounds)
-            evals_result: dict[str, dict[str, list[float]]] = {}
+            evals_result: dict = {}
             booster = xgboost.train(
                 params=params,
                 dtrain=dtrain,
@@ -119,31 +129,26 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
             scores = booster.predict(dval)
             predictions = (scores >= 0.5).astype(int)
             metrics = compute_binary_metrics(bundle.val_target, predictions, scores)
-            metrics.update(
-                {
-                    "training_iteration": completed_rounds,
-                    "train_logloss": float(evals_result["train"]["logloss"][-1]),
-                    "validation_logloss": float(evals_result["validation"]["logloss"][-1]),
-                    "validation_auc": float(evals_result["validation"]["auc"][-1]),
-                    "validation_aucpr": float(evals_result["validation"]["aucpr"][-1]),
-                }
-            )
+            metrics.update({
+                "training_iteration": completed_rounds,
+                "train_logloss": float(evals_result["train"]["logloss"][-1]),
+                "validation_logloss": float(evals_result["validation"]["logloss"][-1]),
+            })
 
             if static_cfg["tracking_uri"]:
                 mlflow.log_metrics(
-                    {key: float(value) for key, value in metrics.items() if isinstance(value, (float, int))},
+                    {k: float(v) for k, v in metrics.items() if isinstance(v, (float, int))},
                     step=completed_rounds,
                 )
 
-            with tempfile.TemporaryDirectory() as checkpoint_dir:
-                model_path = Path(checkpoint_dir) / "model.ubj"
-                metadata_path = Path(checkpoint_dir) / "metadata.json"
-                booster.save_model(model_path.as_posix())
-                metadata_path.write_text(
-                    json.dumps({"completed_rounds": completed_rounds}, indent=2),
-                    encoding="utf-8",
+            # Save checkpoint and report
+            with tempfile.TemporaryDirectory() as ckpt_dir:
+                booster.save_model(str(Path(ckpt_dir) / "model.ubj"))
+                Path(ckpt_dir, "metadata.json").write_text(
+                    json.dumps({"completed_rounds": completed_rounds})
                 )
-                tune.report(metrics, checkpoint=Checkpoint.from_directory(checkpoint_dir))
+                checkpoint = ray.train.Checkpoint.from_directory(ckpt_dir)
+                ray.train.report(metrics, checkpoint=checkpoint)
     finally:
         if static_cfg["tracking_uri"] and mlflow.active_run():
             mlflow.end_run()
@@ -153,27 +158,21 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
 
-    ray_address = args.ray_address or "auto"
-    ray.init(address=ray_address, ignore_reinit_error=True)
+    ray.init(address=args.ray_address or "auto", ignore_reinit_error=True)
 
-    tune_cfg = dict(config["ray_tune"])
+    tune_cfg = config["ray_tune"]
+    num_samples = args.num_samples or int(tune_cfg["num_samples"])
+    max_concurrent = args.max_concurrent_trials or int(tune_cfg["max_concurrent_trials"])
+    cpu_per_trial = args.cpu_per_trial or float(tune_cfg["cpu_per_trial"])
+    gpu_per_trial = args.gpu_per_trial or float(tune_cfg["gpu_per_trial"])
+    max_failures = args.max_failures or int(config["ray_train"]["max_failures"])
     storage_path = args.storage_path or config["ray_train"]["storage_path"]
-    num_samples = args.num_samples if args.num_samples is not None else int(tune_cfg["num_samples"])
-    max_concurrent_trials = (
-        args.max_concurrent_trials
-        if args.max_concurrent_trials is not None
-        else int(tune_cfg["max_concurrent_trials"])
-    )
-    cpu_per_trial = args.cpu_per_trial if args.cpu_per_trial is not None else float(tune_cfg["cpu_per_trial"])
-    gpu_per_trial = args.gpu_per_trial if args.gpu_per_trial is not None else float(tune_cfg["gpu_per_trial"])
-    max_failures = args.max_failures if args.max_failures is not None else int(config["ray_train"]["max_failures"])
 
-    base_params = {
-        key: value
-        for key, value in config["base_params"].items()
-        if key != "num_boost_round"
-    }
+    base_params = {k: v for k, v in config["base_params"].items() if k != "num_boost_round"}
     search_space = build_search_space(config["search_space"])
+
+    metric = tune_cfg["metric"]
+    mode = tune_cfg["mode"]
 
     trainable = tune.with_resources(
         partial(
@@ -186,14 +185,13 @@ def main() -> None:
                 "num_boost_round": int(config["base_params"]["num_boost_round"]),
                 "report_every": int(tune_cfg["report_every"]),
                 "tracking_uri": args.tracking_uri,
-                "experiment_name": args.experiment_name or config.get("ray_tune_experiment_name", "GemSpot-WillVisit-RayTune"),
+                "experiment_name": args.experiment_name
+                    or config.get("ray_tune_experiment_name", "GemSpot-WillVisit-RayTune"),
             },
         ),
         resources={"cpu": cpu_per_trial, "gpu": gpu_per_trial},
     )
 
-    metric = tune_cfg["metric"]
-    mode = tune_cfg["mode"]
     scheduler = ASHAScheduler(
         max_t=int(config["base_params"]["num_boost_round"]),
         grace_period=int(tune_cfg["grace_period"]),
@@ -208,7 +206,7 @@ def main() -> None:
             mode=mode,
             num_samples=num_samples,
             scheduler=scheduler,
-            max_concurrent_trials=max_concurrent_trials,
+            max_concurrent_trials=max_concurrent,
         ),
         run_config=RunConfig(
             name=args.run_name,
@@ -223,53 +221,48 @@ def main() -> None:
     )
 
     result_grid = tuner.fit()
-    best_result = result_grid.get_best_result(metric=metric, mode=mode)
+    best = result_grid.get_best_result(metric=metric, mode=mode)
 
+    # Export best model
     artifact_dir = ensure_dir(args.artifact_dir)
-    best_model_local = artifact_dir / "best_tuned_model.ubj"
-    best_summary_local = artifact_dir / "best_tuned_result.json"
+    best_model_path = artifact_dir / "best_tuned_model.ubj"
+    best_summary_path = artifact_dir / "best_tuned_result.json"
 
-    with best_result.checkpoint.as_directory() as checkpoint_dir:
-        checkpoint_path = Path(checkpoint_dir)
-        source_model = checkpoint_path / "model.ubj"
-        if source_model.exists():
-            best_model_local.write_bytes(source_model.read_bytes())
+    with best.checkpoint.as_directory() as ckpt_dir:
+        src = Path(ckpt_dir) / "model.ubj"
+        if src.exists():
+            best_model_path.write_bytes(src.read_bytes())
 
     summary = {
         "run_name": args.run_name,
         "code_version": get_git_sha(),
-        "best_config": best_result.config,
-        "best_metrics": best_result.metrics,
-        "best_checkpoint_path": best_result.checkpoint.path if best_result.checkpoint else "",
+        "best_config": best.config,
+        "best_metrics": {k: v for k, v in best.metrics.items() if isinstance(v, (float, int))},
         "storage_path": storage_path,
         "num_samples": num_samples,
-        "max_concurrent_trials": max_concurrent_trials,
     }
-    best_summary_local.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    best_summary_path.write_text(json.dumps(summary, indent=2))
 
+    # Log best result to MLflow
     if args.tracking_uri:
         mlflow.set_tracking_uri(args.tracking_uri)
-        mlflow.set_experiment(args.experiment_name or config.get("ray_tune_experiment_name", "GemSpot-WillVisit-RayTune"))
+        exp_name = args.experiment_name or config.get("ray_tune_experiment_name", "GemSpot-WillVisit-RayTune")
+        mlflow.set_experiment(exp_name)
         with mlflow.start_run(run_name=f"{args.run_name}-best-summary", log_system_metrics=True):
-            mlflow.set_tags(
-                {
-                    "project": "GemSpot",
-                    "workflow": "ray-tune-xgboost-summary",
-                    "code_version": get_git_sha(),
-                }
-            )
-            mlflow.log_params(flatten_dict({"best_config": best_result.config}))
+            mlflow.set_tags({
+                "project": "GemSpot",
+                "workflow": "ray-tune-best-summary",
+                "code_version": get_git_sha(),
+            })
+            mlflow.log_params(flatten_dict({"best_config": best.config}))
             mlflow.log_metrics(
-                {
-                    key: float(value)
-                    for key, value in best_result.metrics.items()
-                    if isinstance(value, (float, int))
-                }
+                {k: float(v) for k, v in best.metrics.items() if isinstance(v, (float, int))}
             )
-            if best_model_local.exists():
-                mlflow.log_artifact(str(best_model_local), artifact_path="exported_models")
+            if best_model_path.exists():
+                mlflow.log_artifact(str(best_model_path), artifact_path="exported_models")
             mlflow.log_text(json.dumps(summary, indent=2), "ray_tune_summary.json")
 
+    print("\n=== Best Trial Summary ===")
     print(json.dumps(summary, indent=2))
 
 

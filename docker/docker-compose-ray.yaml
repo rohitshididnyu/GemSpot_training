@@ -1,0 +1,101 @@
+# Ray cluster for GemSpot bonus work on Chameleon bare metal
+# Usage: cd ~/gemspot && docker compose -f docker/docker-compose-ray.yaml up -d
+
+services:
+  # -- MinIO: S3-compatible object store for Ray checkpoints --
+  minio:
+    image: minio/minio:latest
+    container_name: minio-proj10
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+
+  # -- Create the "ray" bucket on first boot --
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init-proj10
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/ray;
+      echo 'Bucket ready';
+      "
+
+  # -- Ray head node --
+  ray-head:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ray
+    container_name: ray-head-proj10
+    ports:
+      - "8265:8265"   # Ray dashboard
+      - "6379:6379"   # Ray GCS
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - RAY_STORAGE=s3://ray/checkpoints
+    command: >
+      ray start --head --port=6379
+      --dashboard-host=0.0.0.0
+      --num-cpus=4
+      --block
+    volumes:
+      - ../data:/app/data
+    shm_size: "4g"
+    depends_on:
+      - minio
+
+  # -- Ray worker 0 --
+  ray-worker-0:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ray
+    container_name: ray-worker-0-proj10
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - RAY_STORAGE=s3://ray/checkpoints
+    command: >
+      ray start --address=ray-head:6379
+      --num-cpus=4
+      --block
+    volumes:
+      - ../data:/app/data
+    shm_size: "4g"
+    depends_on:
+      - ray-head
+
+  # -- Ray worker 1 --
+  ray-worker-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ray
+    container_name: ray-worker-1-proj10
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - RAY_STORAGE=s3://ray/checkpoints
+    command: >
+      ray start --address=ray-head:6379
+      --num-cpus=4
+      --block
+    volumes:
+      - ../data:/app/data
+    shm_size: "4g"
+    depends_on:
+      - ray-head
+
+volumes:
+  minio-data:

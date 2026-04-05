@@ -46,7 +46,7 @@ Create these Chameleon resources:
 ### SSH into the server
 
 ```bash
-ssh -i ~/.ssh/gemspot-key-proj10.pem ubuntu@MLFLOW_IP
+ssh -i ~/.ssh/id_rsa_chameleon cc@129.114.24.253
 ```
 
 ### Format and mount persistent volume
@@ -128,8 +128,8 @@ docker build -t gemspot-train-${PROJECT_SUFFIX} .
 ### Split dataset by time (train on old data, validate on new)
 
 ```bash
-docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} \
-  python scripts/split_dataset.py
+docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} 
+python3 scripts/split_dataset.py
 ```
 
 This creates:

@@ -1,28 +1,39 @@
+# Ray Bonus Config for GemSpot
+# Uses the same real-data schema as candidates.yaml
+
 dataset:
   target_column: will_visit
-  numeric_features:
-    - total_visits_30d
-    - saved_places_30d
-    - scenic_pref
-    - relaxing_pref
-    - foodie_pref
-    - nightlife_pref
-    - num_reviews
-    - place_popularity
-    - avg_rating
-    - distance_km
-    - month
-  categorical_features:
-    - category
-    - region
-    - vibe_tag
-    - day_of_week
-  text_features:
-    - services
-    - review_text
 
+  drop_columns:
+    - user_id
+    - gmap_id
+    - category
+
+  scalar_numeric_features:
+    - avg_rating
+    - location_popularity
+    - user_total_visits
+    - time
+
+  list_encoded_features:
+    category_encoded:
+      length: 21
+      prefix: cat_enc
+    destination_vibe_tag:
+      length: 20
+      prefix: vibe
+    user_personal_preferences:
+      length: 20
+      prefix: user_pref
+
+  interaction_features:
+    - a: user_pref
+      b: vibe
+      prefix: pref_x_vibe
+
+# XGBoost native API parameters (used by Ray Tune trials)
 base_params:
-  objective: binary:logistic
+  objective: "binary:logistic"
   eval_metric:
     - logloss
     - auc
@@ -33,10 +44,12 @@ base_params:
   min_child_weight: 2
   subsample: 0.9
   colsample_bytree: 0.8
+  scale_pos_weight: 4.7
   reg_lambda: 1.0
   reg_alpha: 0.0
   num_boost_round: 200
 
+# Ray Train (distributed training with checkpoints)
 ray_train:
   num_workers: 2
   cpu_per_worker: 4
@@ -44,19 +57,24 @@ ray_train:
   use_gpu: false
   checkpoint_frequency: 25
   max_failures: 2
-  storage_path: s3://ray
+  storage_path: "s3://ray/checkpoints"
 
+# Ray Tune (hyperparameter search with ASHA)
 ray_tune:
-  num_samples: 16
+  num_samples: 12
   max_concurrent_trials: 4
-  metric: validation_aucpr
+  metric: roc_auc
   mode: max
   cpu_per_trial: 4
   gpu_per_trial: 0.0
-  report_every: 10
-  grace_period: 1
+  report_every: 25
+  grace_period: 25
   reduction_factor: 2
 
+ray_tune_experiment_name: GemSpot-WillVisit-RayTune
+ray_experiment_name: GemSpot-WillVisit-RayTrain
+
+# Hyperparameter search space for Ray Tune
 search_space:
   max_depth:
     type: choice
@@ -76,6 +94,9 @@ search_space:
     type: loguniform
     lower: 0.01
     upper: 0.2
+  scale_pos_weight:
+    type: choice
+    values: [1.0, 2.0, 4.7, 6.0]
   reg_lambda:
     type: loguniform
     lower: 0.001

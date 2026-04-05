@@ -1,178 +1,333 @@
-# ML6.2 Bonus Workflow For GemSpot
+# ML6.2 Bonus: Ray Distributed Training on Chameleon Bare Metal
 
-This file adapts `ML6.2.pdf` to a GemSpot-friendly bonus path.
+Complete step-by-step guide for the bonus part of the GemSpot training assignment.
 
-The main idea is:
+## What This Demonstrates (Bonus Points)
 
-- keep your normal MLflow submission path from ML6
-- add a Ray-based bonus path for scheduling, checkpoints, fault tolerance, and hyperparameter tuning
+- **Distributed training** with Ray on a Chameleon bare metal node
+- **Hyperparameter tuning** with Ray Tune + ASHA early stopping (12 trials)
+- **Fault tolerance** via FailureConfig (auto-retry on crash)
+- **Checkpointing** to S3-compatible object storage (MinIO)
+- **MLflow integration** logging every trial's metrics
+- All on the same real dataset (337k rows, 85 features) used for the main ML6 submission
 
-## 1. What Bonus Story You Can Tell
+## Your Reservation Details
 
-For bonus credit, your strongest story is:
+- Lease: `training_proj10`
+- Node: `c11-09` (bare metal, KVM@TACC)
+- Resource type: `physical:host`
 
-- main training runs are tracked in MLflow
-- bonus path uses Ray to make tuning more robust and scalable
-- Ray stores checkpoints in object storage
-- if a worker fails, training can resume from checkpoint
-- ASHA stops weak hyperparameter trials early to save resources
+## Prerequisites
 
-## 2. What This Repo Now Includes
+Before starting, make sure:
+- Your ML6 main submission is already running (MLflow server at `http://129.114.24.253:8000`)
+- You have the split data files (`gemspot_train.csv`, `gemspot_val.csv`) from the main workflow
+- The repo is pushed to GitHub with all Ray bonus files
 
-- `src/train_ray_xgboost.py`: Ray Train + XGBoost distributed training with checkpoints and failure retries
-- `src/train_ray_tune.py`: Ray Tune + ASHA hyperparameter optimization
-- `configs/ray_bonus.yaml`: Ray bonus configuration
-- `ray-runtime.json`: runtime environment file for `ray job submit`
-- `requirements-ray.txt`: extra dependencies for Ray
-- `scripts/submit_ray_tune_job.sh`: helper to submit the bonus tuning job
+---
 
-## 3. Cluster Setup Like ML6.2
+## Step 1: Launch Bare Metal Instance
 
-Follow the `ML6.2.pdf` resource setup pattern:
+1. Go to **Chameleon Cloud > KVM@TACC > Compute > Instances**
+2. Click **Launch Instance**
+   - **Instance Name**: `gemspot-ray-proj10`
+   - **Source**: Ubuntu 22.04 (boot from image)
+   - **Flavor**: `baremetal` (your reservation is for a physical host)
+   - **Networks**: `sharednet1`
+   - **Scheduler Hints > Reservation**: Select `training_proj10`
+3. Click **Launch**
+4. Wait for status = **Active** (bare metal can take 5-10 minutes)
+5. **Associate a Floating IP** to the instance
+   - Go to **Network > Floating IPs > Allocate IP** (if needed)
+   - Associate it to `gemspot-ray-proj10`
+   - Write this down as `RAY_IP` (example: `129.114.XX.XX`)
 
-- reserve a node suitable for Ray
-- bring up the training host
-- install Docker
-- clone the repo
-- bring up the Ray cluster
-- start a Jupyter container for job submission
+6. **Add Security Groups** (if not already created):
+   - `gemspot-allow-ssh-proj10` (port 22)
+   - Create `gemspot-allow-ray-proj10` with rules:
+     - TCP 8265 (Ray Dashboard)
+     - TCP 9001 (MinIO Console)
 
-Important:
+**TAKE SCREENSHOT**: Instance running in Chameleon dashboard
 
-- ML6.2’s example names like `node-mltrain-<username>` should be changed to names ending with your project suffix
-- keep your project suffix on leases and servers
+---
 
-## 4. Start The Ray Cluster
-
-Inside the training host, use the ML6.2-style commands.
-
-If you are literally following the ML6.2 lab repository on the same host, those commands are:
+## Step 2: SSH Into Bare Metal Node
 
 ```bash
-export HOST_IP=$(curl --silent http://169.254.169.254/latest/meta-data/public-ipv4)
-docker compose -f mltrain-chi/docker/docker-compose-ray-rocm.yaml up -d
+ssh -i ~/.ssh/id_rsa_chameleon cc@RAY_IP
+```
+
+Replace `RAY_IP` with your floating IP.
+
+---
+
+## Step 3: Install Docker
+
+```bash
+curl -sSL https://get.docker.com/ | sudo sh
+sudo groupadd -f docker
+sudo usermod -aG docker "$USER"
+newgrp docker
+docker run hello-world
+```
+
+Install Docker Compose:
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker-compose-plugin
+docker compose version
+```
+
+---
+
+## Step 4: Clone Repo and Get Data
+
+```bash
+cd ~
+git clone https://github.com/rohitshididnyu/GemSpot_training.git gemspot
+cd gemspot
+mkdir -p data/demo
+```
+
+Now copy the split dataset from your MLflow server (which already has the data).
+Open a **second SSH terminal to your MLflow server** and run:
+
+```bash
+# ON THE MLFLOW SERVER (129.114.24.253):
+scp ~/gemspot/data/demo/gemspot_train.csv cc@RAY_IP:~/gemspot/data/demo/
+scp ~/gemspot/data/demo/gemspot_val.csv cc@RAY_IP:~/gemspot/data/demo/
+```
+
+OR copy from your Mac:
+
+```bash
+# ON YOUR MAC:
+scp -i ~/.ssh/id_rsa_chameleon \
+  "/Users/rohitshidid/Documents/New project/data/demo/gemspot_train.csv" \
+  cc@RAY_IP:~/gemspot/data/demo/
+
+scp -i ~/.ssh/id_rsa_chameleon \
+  "/Users/rohitshidid/Documents/New project/data/demo/gemspot_val.csv" \
+  cc@RAY_IP:~/gemspot/data/demo/
+```
+
+If you only have `initial_training_set.csv` locally, upload that and split on the Ray node:
+
+```bash
+# ON YOUR MAC:
+scp -i ~/.ssh/id_rsa_chameleon \
+  "/Users/rohitshidid/Documents/New project/data/demo/initial_training_set.csv" \
+  cc@RAY_IP:~/gemspot/data/demo/
+
+# THEN ON THE RAY NODE:
+cd ~/gemspot
+docker build -t gemspot-train-proj10 .
+docker run --rm -v "$(pwd):/app" gemspot-train-proj10 python3 scripts/split_dataset.py
+```
+
+Verify data exists:
+
+```bash
+ls -lh ~/gemspot/data/demo/
+# Should see gemspot_train.csv and gemspot_val.csv
+```
+
+---
+
+## Step 5: Start the Ray Cluster
+
+```bash
+cd ~/gemspot
+docker compose -f docker/docker-compose-ray.yaml up -d --build
+```
+
+This starts 4 containers:
+- `minio-proj10` — S3-compatible checkpoint storage
+- `ray-head-proj10` — Ray head node (dashboard on port 8265)
+- `ray-worker-0-proj10` — Ray worker
+- `ray-worker-1-proj10` — Ray worker
+
+Wait ~2 minutes for the build, then verify:
+
+```bash
 docker ps
 ```
 
-Verify workers:
+You should see all 4 containers running. Check Ray cluster:
 
 ```bash
-docker exec ray-worker-0 "rocm-smi"
-docker exec ray-worker-1 "rocm-smi"
+docker exec ray-head-proj10 ray status
 ```
 
-If you are on NVIDIA instead of AMD, use the NVIDIA Ray compose file from the lab.
+Should show 3 nodes (head + 2 workers) with CPUs available.
 
-## 5. Start The Ray Jupyter Container
+**TAKE SCREENSHOT**: `docker ps` showing all 4 containers running
 
-From the training host:
+Open in browser:
+- **Ray Dashboard**: `http://RAY_IP:8265`
+- **MinIO Console**: `http://RAY_IP:9001` (login: minioadmin / minioadmin)
+
+**TAKE SCREENSHOT**: Ray Dashboard showing cluster nodes
+
+---
+
+## Step 6: Run Ray Tune (Hyperparameter Search)
+
+### START SCREEN RECORDING ON YOUR MAC NOW
+
+Set your MLflow server IP (the one from the main ML6 submission):
 
 ```bash
-HOST_IP=$(curl --silent http://169.254.169.254/latest/meta-data/public-ipv4)
-docker build -t jupyter-ray -f mltrain-chi/docker/Dockerfile.jupyter-ray .
-docker run -d --rm -p 8888:8888 \
-  -v ~/gemspot:/home/jovyan/work \
-  -e RAY_ADDRESS=http://${HOST_IP}:8265/ \
-  --name jupyter \
-  jupyter-ray
-docker exec jupyter jupyter server list
+export MLFLOW_IP=129.114.24.253
 ```
 
-Open:
-
-```text
-http://YOUR_TRAINING_FLOATING_IP:8888/lab?token=...
-```
-
-Inside the Jupyter terminal:
+Run the Ray Tune job:
 
 ```bash
-env | grep RAY_ADDRESS
+docker exec -e AWS_ACCESS_KEY_ID=minioadmin \
+  -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  -e AWS_ENDPOINT_URL=http://minio:9000 \
+  ray-head-proj10 \
+  python /app/src/train_ray_tune.py \
+    --config /app/configs/ray_bonus.yaml \
+    --train-csv /app/data/demo/gemspot_train.csv \
+    --val-csv /app/data/demo/gemspot_val.csv \
+    --tracking-uri http://${MLFLOW_IP}:8000 \
+    --storage-path s3://ray/checkpoints \
+    --num-samples 12 \
+    --cpu-per-trial 4 \
+    --max-concurrent-trials 3
 ```
 
-## 6. Prepare Demo Data For The Ray Job
+This will:
+- Launch 12 hyperparameter trials
+- Run max 3 at a time (across your 12 CPUs on head + workers)
+- ASHA scheduler kills weak trials early
+- Checkpoints saved to MinIO
+- Each trial logged to MLflow
 
-Inside the Jupyter terminal:
+**Expected runtime**: 10-20 minutes depending on hardware.
+
+While it runs, watch:
+- **Terminal**: trial progress (shows which trials are running, stopped, completed)
+- **Ray Dashboard** (`http://RAY_IP:8265`): click Jobs to see active job
+- **MinIO Console** (`http://RAY_IP:9001`): navigate to `ray` bucket to see checkpoints
+
+### STOP SCREEN RECORDING after the best trial summary prints
+
+**TAKE SCREENSHOT**: Terminal showing final "Best Trial Summary" output
+**TAKE SCREENSHOT**: Ray Dashboard showing completed job
+**TAKE SCREENSHOT**: MinIO showing checkpoint files in the `ray` bucket
+
+---
+
+## Step 7 (Optional): Run Ray Train with Fault Tolerance Demo
+
+This shows distributed training with automatic failure recovery:
 
 ```bash
-cd ~/work
-python scripts/make_demo_dataset.py --output-dir data/demo
+docker exec -e AWS_ACCESS_KEY_ID=minioadmin \
+  -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  -e AWS_ENDPOINT_URL=http://minio:9000 \
+  ray-head-proj10 \
+  python /app/src/train_ray_xgboost.py \
+    --config /app/configs/ray_bonus.yaml \
+    --train-csv /app/data/demo/gemspot_train.csv \
+    --val-csv /app/data/demo/gemspot_val.csv \
+    --tracking-uri http://${MLFLOW_IP}:8000 \
+    --storage-path s3://ray/checkpoints \
+    --num-workers 2 \
+    --cpu-per-worker 4 \
+    --max-failures 2
 ```
 
-Because `ray job submit --working-dir .` uploads the working directory, the demo CSVs can travel with the job.
+To **demonstrate fault tolerance** (impressive for bonus):
 
-## 7. Run The Ray Tune Bonus Job
+1. Start the training (command above)
+2. Wait until you see checkpoint progress (~25 rounds)
+3. In a second terminal, kill a worker: `docker restart ray-worker-0-proj10`
+4. Watch the training automatically recover and continue from checkpoint
+5. **TAKE SCREENSHOT**: Terminal showing recovery after worker restart
 
-Inside the Jupyter terminal:
+---
+
+## Step 8: Verify in MLflow
+
+Open `http://129.114.24.253:8000` (your MLflow server) and check:
+
+- **Experiment**: `GemSpot-WillVisit-RayTune` — should show individual trial runs + best summary
+- **Experiment**: `GemSpot-WillVisit-RayTrain` — should show the distributed training run (if you did Step 7)
+- Each run has: params, metrics, artifacts (exported model + summary JSON)
+
+**TAKE SCREENSHOT**: MLflow showing Ray Tune experiments
+
+---
+
+## Step 9: What To Include in Your Report
+
+Add a bonus section to your PDF report:
+
+```
+BONUS: Ray Distributed Training (ML6.2)
+
+We extended the GemSpot training pipeline with Ray for distributed
+hyperparameter tuning on a Chameleon bare metal node (c11-09).
+
+What we did:
+- Set up a Ray cluster (1 head + 2 workers) using Docker Compose
+- Used MinIO for S3-compatible checkpoint storage
+- Ran Ray Tune with ASHA scheduler to search 12 XGBoost configurations
+- ASHA early-stopped weak trials, saving compute resources
+- Best trial achieved roc_auc=X.XXX (vs xgboost_v2's 0.836)
+- Demonstrated fault tolerance: killed a worker mid-training,
+  Ray automatically recovered from checkpoint and continued
+
+Key Ray features demonstrated:
+- Distributed scheduling across multiple workers
+- ASHA early stopping (Adaptive Successive Halving)
+- Checkpoint persistence to object storage (MinIO/S3)
+- FailureConfig with max_failures=2 for automatic retry
+- Full MLflow integration for experiment tracking
+
+Dashboards:
+- Ray Dashboard: http://RAY_IP:8265
+- MinIO Console: http://RAY_IP:9001
+- MLflow: http://129.114.24.253:8000
+```
+
+---
+
+## Step 10: Cleanup (After Grading)
+
+After your grade is posted:
 
 ```bash
-cd ~/work
-export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_FLOATING_IP:8000
-bash scripts/submit_ray_tune_job.sh
+# Stop Ray cluster
+cd ~/gemspot
+docker compose -f docker/docker-compose-ray.yaml down -v
+
+# Release bare metal instance (in Chameleon dashboard)
+# Delete the instance and release the floating IP
 ```
 
-The helper script submits:
+---
 
-```bash
-ray job submit \
-  --runtime-env ray-runtime.json \
-  --working-dir . \
-  -- \
-  python src/train_ray_tune.py \
-    --config configs/ray_bonus.yaml \
-    --train-csv data/demo/gemspot_train.csv \
-    --val-csv data/demo/gemspot_val.csv \
-    --tracking-uri http://YOUR_MLFLOW_FLOATING_IP:8000
-```
+## Quick Reference: All Dashboards
 
-## 8. What The Bonus Job Does
+| Service | URL | Purpose |
+|---------|-----|---------|
+| MLflow | `http://129.114.24.253:8000` | Experiment tracking (main + bonus) |
+| Ray Dashboard | `http://RAY_IP:8265` | Ray cluster status, job progress |
+| MinIO Console | `http://RAY_IP:9001` | Checkpoint storage browser |
 
-- samples XGBoost hyperparameters from `configs/ray_bonus.yaml`
-- checkpoints the model regularly
-- uses ASHA to terminate weak trials early
-- keeps the best checkpoints
-- writes the best model summary to `artifacts/ray_tune`
-- optionally logs best-trial information back to MLflow
+## Quick Reference: Screenshots Needed
 
-## 9. Optional Ray Train Robustness Demo
-
-To show a stronger “robustness” story, run:
-
-```bash
-cd ~/work
-python src/train_ray_xgboost.py \
-  --config configs/ray_bonus.yaml \
-  --train-csv data/demo/gemspot_train.csv \
-  --val-csv data/demo/gemspot_val.csv \
-  --storage-path s3://ray \
-  --tracking-uri http://YOUR_MLFLOW_FLOATING_IP:8000
-```
-
-This path uses:
-
-- `XGBoostTrainer`
-- `FailureConfig(max_failures=2)`
-- checkpointing to persistent storage
-- distributed Ray scheduling
-
-If you want to demonstrate recovery after failure, let the job get past at least one checkpoint interval and then restart the worker/container that is running the workload, similar to the ML6.2 lab.
-
-## 10. Dashboards To Open
-
-- Ray dashboard: `http://YOUR_TRAINING_FLOATING_IP:8265`
-- MinIO dashboard used by the Ray cluster: `http://YOUR_TRAINING_FLOATING_IP:9001`
-- MLflow UI: `http://YOUR_MLFLOW_FLOATING_IP:8000`
-
-## 11. What To Screenshot For Bonus Evidence
-
-- Ray dashboard showing active jobs
-- MinIO bucket showing Ray checkpoints
-- terminal output showing Ray trial statuses
-- if you do the fault tolerance demo, before/after evidence of worker failure and recovery
-- final best-trial summary
-
-## 12. What To Say In Your Report
-
-Suggested wording:
-
-"For bonus work, we adapted the ML6.2 Ray workflow to GemSpot by adding a Ray-based XGBoost tuning pipeline with checkpointing, ASHA early stopping, and retry configuration. This allows the training platform to recover from failures and to evaluate more candidate configurations efficiently than a sequential search."
+1. Chameleon dashboard showing bare metal instance running
+2. `docker ps` with 4 Ray containers
+3. Ray Dashboard showing cluster nodes
+4. Terminal: Ray Tune final summary with best trial
+5. Ray Dashboard: completed job
+6. MinIO: checkpoint files in `ray` bucket
+7. MLflow: Ray Tune experiments
+8. (Optional) Terminal showing fault tolerance recovery
