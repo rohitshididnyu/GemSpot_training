@@ -21,7 +21,8 @@ import yaml
 os.environ.setdefault("RAY_AIR_NEW_OUTPUT", "0")
 
 from ray import tune  # noqa: E402
-from ray.train import CheckpointConfig, FailureConfig, RunConfig  # noqa: E402
+from ray.tune import RunConfig  # noqa: E402
+from ray.train import CheckpointConfig, FailureConfig  # noqa: E402
 from ray.tune.schedulers import ASHAScheduler
 
 from gemspot_training.ray_data import make_xgboost_frame_bundle
@@ -215,7 +216,6 @@ def main() -> None:
         run_config=RunConfig(
             name=args.run_name,
             storage_path=storage_path,
-            verbose=1,
             failure_config=FailureConfig(max_failures=max_failures),
             checkpoint_config=CheckpointConfig(
                 num_to_keep=2,

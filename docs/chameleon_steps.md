@@ -126,16 +126,25 @@ docker build -t gemspot-train-${PROJECT_SUFFIX} .
 ```
 
 ### Split dataset by time (train on old data, validate on new)
-
-```bash
-docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} 
-python3 scripts/split_dataset.py
+### fixed 
+```bash 
+docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} python3 scripts/split_dataset.py 
 ```
 
 This creates:
 
 - `data/demo/gemspot_train.csv` — 303,117 rows (before May 2021)
 - `data/demo/gemspot_val.csv` — 34,581 rows (May 2021 onward)
+
+
+Verify data exists:
+
+```bash
+ls -lh ~/gemspot/data/demo/
+# Should see gemspot_train.csv and gemspot_val.csv
+```
+
+
 
 ## 5. Run Training
 
