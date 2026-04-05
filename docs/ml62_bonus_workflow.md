@@ -118,7 +118,7 @@ If you only have `initial_training_set.csv` locally, upload that and split on th
 # ON YOUR MAC:
 scp -i ~/.ssh/id_rsa_chameleon \
   "/Users/rohitshidid/Documents/New project/data/demo/initial_training_set.csv" \
-  cc@RAY_IP:~/gemspot/data/demo/
+  cc@129.114.109.166:~/gemspot/data/demo/
 
 # THEN ON THE RAY NODE:
 cd ~/gemspot
