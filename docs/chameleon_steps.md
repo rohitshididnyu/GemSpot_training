@@ -1,130 +1,65 @@
 # Chameleon Steps For GemSpot Training
 
-This guide assumes you are using an Ubuntu image on Chameleon and you are responsible for the training role.
-
-Important:
-
-- for the graded MLflow service, follow the setup pattern in [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf)
-- that handout uses PostgreSQL plus CHI@TACC object storage and serves MLflow on port `8000`
-- treat `mlflow_setup.pdf` as already completed if you have already run it
-- follow [ML5.pdf](/Users/rohitshidid/Downloads/ML5.pdf) for the training machine workflow
-- the simplified script in this repo is only for local testing
-- adapt all resource names so your project ID is a suffix, even if the notebook examples use it as a prefix
+This guide covers every step to run GemSpot training on Chameleon Cloud.
 
 ## 1. What You Are Building
-
-For the initial implementation, your goal is not a full end-to-end GemSpot product.
 
 Your goal is to show that:
 
 - you can run training inside a Docker container on Chameleon
 - each training run is tracked in MLflow
-- you have multiple model candidates, not just one model file
+- you have a baseline and two tuned XGBoost candidates
 - you can compare quality and cost tradeoffs
 
-For this starter, the model predicts:
+The model predicts: given a user and a candidate place, will the user visit? (`will_visit` = 0 or 1)
 
-- input: one user plus one candidate place
-- output: whether the user is likely to visit or save that place
+Three candidates are trained from one config file:
+
+- `baseline` — naive dummy that always predicts the majority class
+- `xgboost_v1` — XGBoost with default params (no imbalance handling)
+- `xgboost_v2` — tuned XGBoost with `scale_pos_weight=4.7` for class imbalance
 
 ## 2. What Resources To Create
 
-You may use either one or two Chameleon machines.
+Use one VM for both MLflow and training (simplest path for this project).
 
-Fastest path:
-
-- one VM for MLflow plus training, if your training job is lightweight
-
-More scalable path:
-
-- one VM for MLflow
-- one separate training VM
-
-For this starter repo, the fastest path is usually enough.
-
-1. MLflow machine
-- small or medium general-purpose VM
-- persistent storage volume attached
+- small or medium general-purpose VM at KVM@TACC
+- persistent storage volume attached (for MLflow data)
 - one floating IP
-- name example: `gemspot-mlflow-server-proj99`
-
-2. Training machine
-- the smallest machine that comfortably runs your training job
-- for this starter, a CPU VM is enough because the provided models are scikit-learn models
-- name example: `gemspot-train-server-proj99`
-
-If your course staff expects you to follow the GPU workflow from `ML5`, use a GPU training machine and the ML5 container setup steps anyway. The model will still run correctly there.
+- name example: `gemspot-mlflow-server-proj10`
 
 Important:
 
-- put your project suffix at the end of resource names
+- put your project suffix (`proj10`) at the end of ALL resource names
 - only keep instances running while you are actively working
-- use only one floating IP, usually on the MLflow machine
+- use only one floating IP
 
 ## 3. Launch MLflow First
 
-Your instructors specifically want MLflow running with persistent storage before training.
+Create these Chameleon resources:
 
-Use the notebook flow from [mlflow_setup.pdf](/Users/rohitshidid/Downloads/mlflow_setup.pdf), but rename resources to satisfy the suffix rule. For example:
+- security groups: `gemspot-allow-ssh-proj10`, `gemspot-allow-8000-proj10`
+- volume: `gemspot-mlflow-persist-proj10` (10 GiB)
+- instance: `gemspot-mlflow-server-proj10` (Ubuntu-22.04, m1.medium)
+- floating IP: associate to the instance, write it down as `MLFLOW_IP`
 
-- bucket: `gemspot-mlflow-artifacts-proj99`
-- lease: `gemspot-mlflow-lease-proj99`
-- server: `gemspot-mlflow-server-proj99`
-- volume: `gemspot-mlflow-persist-proj99`
-- security groups: `gemspot-allow-ssh-proj99`, `gemspot-allow-8000-proj99`
-
-### On Chameleon
-
-Run the notebook-equivalent setup from the PDF so that:
-
-- PostgreSQL data lives on the mounted volume
-- artifacts go to CHI@TACC object storage
-- the MLflow UI is available on port `8000`
-
-Check that it is running:
+### SSH into the server
 
 ```bash
-docker ps
-curl http://127.0.0.1:8000
+ssh -i ~/.ssh/gemspot-key-proj10.pem ubuntu@MLFLOW_IP
 ```
 
-In your browser, open:
-
-```text
-http://YOUR_FLOATING_IP:8000
-```
-
-Keep this URL. You need it for:
-
-- training runs
-- your run table links
-- your final submission
-
-## 4. Prepare the Training Machine
-
-If you use a second machine for training, follow the training-machine pattern from `ML5.pdf`.
-
-That means:
-
-- bring up the training machine
-- install Docker
-- if it is a GPU node, install NVIDIA container toolkit
-- test with `docker run --rm --gpus all ubuntu nvidia-smi`
-- build and run your training image on that machine
-
-Important:
-
-- if you adapt the ML5 notebook, change its default resource names
-- do not leave names like `node-llm-single-<username>`
-- use names with your project suffix, for example `gemspot-train-server-proj99` and `gemspot-train-lease-proj99`
-
-SSH into the training machine:
+### Format and mount persistent volume
 
 ```bash
-ssh cc@TRAINING_MACHINE_IP
+lsblk
+sudo mkfs.ext4 /dev/vdb
+sudo mkdir -p /mnt/mlflow-proj10
+sudo mount /dev/vdb /mnt/mlflow-proj10
+sudo chown -R $USER:$USER /mnt/mlflow-proj10
 ```
 
-Install Docker and Git:
+### Install Docker
 
 ```bash
 curl -sSL https://get.docker.com/ | sudo sh
@@ -134,154 +69,122 @@ newgrp docker
 docker run hello-world
 ```
 
-Clone your repo:
+### Start PostgreSQL and MLflow
 
 ```bash
-git clone <your-repo-url> gemspot
+mkdir -p /mnt/mlflow-proj10/postgres-data /mnt/mlflow-proj10/mlflow-artifacts
+
+docker run -d --restart unless-stopped --name mlflow-postgres-proj10 \
+  -e POSTGRES_USER=mlflow -e POSTGRES_PASSWORD=mlflow -e POSTGRES_DB=mlflow \
+  -v /mnt/mlflow-proj10/postgres-data:/var/lib/postgresql/data \
+  -p 5432:5432 postgres:15
+
+# Wait 10 seconds, then start MLflow
+docker run -d --restart unless-stopped --name gemspot-mlflow-proj10 \
+  --link mlflow-postgres-proj10:postgres -p 8000:5000 \
+  -v /mnt/mlflow-proj10/mlflow-artifacts:/mlflow/artifacts \
+  ghcr.io/mlflow/mlflow:v2.12.2 \
+  mlflow server --backend-store-uri postgresql://mlflow:mlflow@postgres:5432/mlflow \
+    --default-artifact-root /mlflow/artifacts --host 0.0.0.0 --port 5000
+```
+
+Verify:
+
+```bash
+docker ps          # Both containers should show "Up"
+curl http://127.0.0.1:8000   # Should return HTML
+```
+
+Open in browser: `http://MLFLOW_IP:8000`
+
+## 4. Prepare Training on the Same Machine
+
+### Install git and clone repo
+
+```bash
+sudo apt update && sudo apt install -y git
+cd ~
+git clone https://github.com/rohitshididnyu/GemSpot_training.git gemspot
 cd gemspot
 ```
 
-If this is a GPU server, install the NVIDIA container toolkit using the ML5 flow:
+### Upload the real dataset
+
+From your Mac, upload `initial_training_set.csv` to the server:
 
 ```bash
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-
-sudo apt update
-sudo apt-get install -y nvidia-container-toolkit jq
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo jq 'if has("exec-opts") then . else . + {"exec-opts": ["native.cgroupdriver=cgroupfs"]} end' \
-  /etc/docker/daemon.json | \
-  sudo tee /etc/docker/daemon.json.tmp > /dev/null
-sudo mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json
-sudo systemctl restart docker
-
-docker run --rm --gpus all ubuntu nvidia-smi
+scp -i ~/.ssh/gemspot-key-proj10.pem \
+  "/Users/rohitshidid/Documents/New project/data/demo/initial_training_set.csv" \
+  ubuntu@MLFLOW_IP:~/gemspot/data/demo/
 ```
 
-## 5. Create the Dataset
-
-For your graded project, you should replace the synthetic demo data with your real processed GemSpot training data.
-
-But to get unstuck immediately and validate the pipeline, first create the demo dataset.
-
-If you want to stay close to the ML5 container-first workflow, generate the demo data inside Docker:
+### Build Docker image
 
 ```bash
-export PROJECT_SUFFIX=proj99
+export PROJECT_SUFFIX=proj10
 docker build -t gemspot-train-${PROJECT_SUFFIX} .
-docker run --rm \
-  -v "$(pwd):/app" \
-  gemspot-train-${PROJECT_SUFFIX} \
-  python scripts/make_demo_dataset.py --output-dir data/demo
 ```
 
-If you prefer to do it on the host, this also works:
+### Split dataset by time (train on old data, validate on new)
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-python3 scripts/make_demo_dataset.py --output-dir data/demo
+docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} \
+  python scripts/split_dataset.py
 ```
 
-Later, when your data pipeline is ready, your real CSV should keep the same columns as the config expects.
+This creates:
 
-## 6. Run Training In Docker
+- `data/demo/gemspot_train.csv` — 303,117 rows (before May 2021)
+- `data/demo/gemspot_val.csv` — 34,581 rows (May 2021 onward)
 
-Set your MLflow server address:
+## 5. Run Training
 
-```bash
-export PROJECT_SUFFIX=proj99
-export MLFLOW_TRACKING_URI=http://YOUR_FLOATING_IP:8000
-```
-
-Build and run:
+### START SCREEN RECORDING ON YOUR MAC NOW
 
 ```bash
-export DOCKER_EXTRA_ARGS="--gpus all"
-bash scripts/run_training_container.sh
-```
-
-If you are on a CPU-only training VM, unset the GPU flag:
-
-```bash
+cd ~/gemspot
+export PROJECT_SUFFIX=proj10
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+export MLFLOW_TRACKING_URI=http://${PRIVATE_IP}:8000
 unset DOCKER_EXTRA_ARGS
 bash scripts/run_training_container.sh
 ```
 
-That command will:
+This trains all 3 candidates (baseline, xgboost_v1, xgboost_v2) and logs to MLflow.
 
-- build the Docker image
-- run the training script in a container
-- send every run to MLflow
+### STOP SCREEN RECORDING
 
-## 7. What To Check In MLflow
+## 6. Verify in MLflow
 
-Open MLflow in the browser and verify that you can see:
+Open `http://MLFLOW_IP:8000` and check:
 
-- one run per model candidate
-- parameters
-- metrics
-- artifacts
-- model artifact
-- environment information
+- experiment `GemSpot-WillVisit`
+- 3 runs (baseline, xgboost_v1, xgboost_v2)
+- parameters, metrics, artifacts for each run
+- system metrics (cpu, memory, disk, network)
 
-For this repo, each run logs:
+## 7. Export Run Table
 
-- candidate model name and hyperparameters
-- accuracy, precision, recall, F1, ROC AUC, average precision
-- training time
-- rows per second
-- environment details such as host and GPU count
+```bash
+cd ~/gemspot
+docker run --rm \
+  -v "$(pwd):/app" \
+  -e MLFLOW_TRACKING_URI=http://${PRIVATE_IP}:8000 \
+  gemspot-train-proj10 \
+  python scripts/export_run_table.py \
+    --experiment-name GemSpot-WillVisit \
+    --tracking-uri http://${PRIVATE_IP}:8000 \
+    --ui-base-url http://MLFLOW_IP:8000
+```
 
-## 8. How To Move From Demo Data To Real Data
+Copy the Markdown table output for your PDF report.
 
-Replace `data/demo/gemspot_train.csv` and `data/demo/gemspot_val.csv` with your real data export.
+## 8. What To Say If Asked Why These Models
 
-Your real data should contain:
-
-- user behavior features like visit counts or save counts
-- user preference features
-- destination metadata
-- optional review text or aggregated review text
-- the binary target column `will_visit`
-
-Do not create different scripts for different models.
-
-Instead:
-
-- keep one script: `src/train.py`
-- change model candidates in `configs/candidates.yaml`
-- rerun training
-
-## 9. Recommended Run Sequence
-
-Use this exact order:
-
-1. `dummy_most_frequent`
-2. `logistic_regression_baseline`
-3. `random_forest_v1`
-4. `hist_gradient_boosting_v1`
-
-Why this order:
-
-- dummy gives a hard lower bound
-- logistic is your simple real baseline
-- random forest checks non-linear interactions
-- gradient boosting is a strong candidate for tabular ranking-style tasks
-
-## 10. What To Say If Asked Why These Models
-
-You can say:
-
-- GemSpot is mostly structured tabular data with a small amount of text
-- we needed a simple baseline plus stronger non-linear candidates
-- logistic regression is fast, explainable, and cheap
-- random forest and boosting test whether feature interactions improve recommendation quality
+- GemSpot uses structured tabular data (user preferences, place metadata, category encodings)
+- XGBoost is the state-of-the-art for tabular classification
+- the dummy baseline establishes a lower bound (ROC-AUC = 0.50)
+- xgboost_v1 proves the model architecture works with defaults
+- xgboost_v2 improves on v1 by handling the 82/18 class imbalance with `scale_pos_weight=4.7`
+- the time-based split ensures we validate on future data, not random samples
 - MLflow lets us compare quality against runtime cost

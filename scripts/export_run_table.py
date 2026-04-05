@@ -6,7 +6,14 @@ from mlflow.tracking import MlflowClient
 
 
 def format_params(run) -> str:
-    keys = ["candidate.kind", "candidate.params.C", "candidate.params.max_depth", "candidate.params.n_estimators"]
+    keys = [
+        "candidate.kind",
+        "candidate.params.learning_rate",
+        "candidate.params.max_depth",
+        "candidate.params.n_estimators",
+        "candidate.params.scale_pos_weight",
+        "candidate.params.strategy",
+    ]
     parts = []
     for key in keys:
         if key in run.data.params:

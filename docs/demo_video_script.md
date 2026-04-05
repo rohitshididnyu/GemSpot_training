@@ -8,8 +8,8 @@ Keep the demo short and simple. Aim for 2 to 4 minutes.
 
 In a browser:
 
-- open `http://YOUR_FLOATING_IP:5000`
-- show the GemSpot experiment page
+- open `http://YOUR_FLOATING_IP:8000`
+- show the GemSpot-WillVisit experiment page
 
 In terminal:
 
@@ -17,16 +17,18 @@ In terminal:
 docker ps
 ```
 
-Point out the MLflow container name, for example `gemspot-mlflow-proj99`.
+Point out the MLflow container name: `gemspot-mlflow-proj10`.
 
 ### Part 2. Show the training container starting
 
 On the training machine:
 
 ```bash
-cd gemspot
-export PROJECT_SUFFIX=proj99
-export MLFLOW_TRACKING_URI=http://YOUR_FLOATING_IP:5000
+cd ~/gemspot
+export PROJECT_SUFFIX=proj10
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+export MLFLOW_TRACKING_URI=http://${PRIVATE_IP}:8000
+unset DOCKER_EXTRA_ARGS
 bash scripts/run_training_container.sh
 ```
 
@@ -34,7 +36,8 @@ Say:
 
 - this is running inside Docker on Chameleon
 - the tracking URI points to the live MLflow service
-- the script is training multiple candidates from one config file
+- the script trains 3 candidates from one config file: baseline, xgboost_v1, xgboost_v2
+- the data was split by time: training on Nov 2020 - Apr 2021, validating on May - Sep 2021
 
 ### Part 3. Show the runs appear in MLflow
 
@@ -42,30 +45,26 @@ Refresh the browser on the MLflow page.
 
 Show:
 
-- new runs appearing
-- metrics for each candidate
-- artifacts logged for a run
+- 3 new runs appearing (baseline, xgboost_v1, xgboost_v2)
+- metrics for each candidate (accuracy, f1, roc_auc, average_precision)
+- artifacts logged for a run (model files, run_summary.json)
 
-### Part 4. Show one promising run
+### Part 4. Show the best candidate (xgboost_v2)
 
-Open one run and point to:
+Open the xgboost_v2 run and point to:
 
-- candidate name
-- key hyperparameters
-- main metrics
-- training time
+- candidate name: xgboost_v2
+- key hyperparameters: learning_rate=0.1, max_depth=8, scale_pos_weight=4.7
+- main metrics: roc_auc=0.836, average_precision=0.965, recall=0.995
+- training time: ~3.8 seconds on 303k rows
+- system metrics tab: cpu usage, memory
 
-Then say why you think it is promising.
+Then say why it is promising:
 
-## Optional Bonus Clip
-
-If you use the ML6.2 bonus path, add a short extra clip showing:
-
-- the Ray dashboard
-- the Ray Tune job output with multiple trials
-- checkpoint files appearing in storage
-- if applicable, a worker/container restart followed by resumed progress
+- handles the 82/18 class imbalance with scale_pos_weight
+- highest average precision and recall
+- trained on 303k real Google Maps review rows
 
 ## What To Say In One Sentence
 
-"For the GemSpot training subsystem, I trained multiple recommendation candidates in Docker on Chameleon, tracked every run in MLflow, and compared quality and cost so the team can choose a model instead of shipping a single untracked model file."
+"For the GemSpot training subsystem, I trained a baseline and two XGBoost candidates on 337k real Google Maps reviews in Docker on Chameleon, used a time-based train/val split, tracked every run in MLflow, and selected xgboost_v2 as the best model for its superior ranking quality and recall."

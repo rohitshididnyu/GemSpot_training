@@ -9,11 +9,6 @@ These are shared with your teammates.
 - `interfaces/will_visit_input.sample.json`
 - `interfaces/will_visit_output.sample.json`
 
-If your team is officially presenting two separate models at this stage, also include:
-
-- `interfaces/vibe_tag_input.sample.json`
-- `interfaces/vibe_tag_output.sample.json`
-
 What these files do:
 
 - the data teammate produces something shaped like the input JSON
@@ -22,18 +17,18 @@ What these files do:
 
 ## B. Your Training Deliverables
 
-### 1. Written document
+### 1. Written document (PDF)
 
-Create a PDF called something like `gemspot_training_report.pdf`.
+Create a PDF called `gemspot_training_report.pdf`.
 
 Include:
 
 - your name and role: training
-- short project description
-- MLflow URL
-- training runs table
-- which candidates are promising and why
-- next experiment you would try
+- short project description (GemSpot predicts will_visit for user-place pairs)
+- MLflow URL: `http://YOUR_FLOATING_IP:8000`
+- training runs table with 3 rows (baseline, xgboost_v1, xgboost_v2)
+- which candidate is best: xgboost_v2 (highest avg precision, best recall, handles imbalance)
+- next experiment you would try (e.g., hyperparameter tuning with Optuna, more features)
 
 ### 2. Repository artifacts
 
@@ -47,70 +42,75 @@ Make sure these exist in your repo:
 - `src/gemspot_training/utils.py`
 - `configs/candidates.yaml`
 
-Optional but helpful:
+Also helpful:
 
-- `scripts/make_demo_dataset.py`
-- `scripts/start_mlflow_server.sh`
+- `scripts/split_dataset.py`
 - `scripts/run_training_container.sh`
 - `scripts/export_run_table.py`
 
-### 3. Demo video
+### 3. Demo video (2-4 minutes)
 
-Record a short screen capture showing:
+Record a screen capture showing:
 
-- the training container starting on Chameleon
-- MLflow already running on Chameleon
-- a full training run completing
-- the new runs appearing in MLflow
+- MLflow UI live on Chameleon (`http://YOUR_FLOATING_IP:8000`)
+- `docker ps` showing MLflow container running
+- training container starting (`bash scripts/run_training_container.sh`)
+- training output for 3 candidates (baseline, xgboost_v1, xgboost_v2)
+- the 3 runs appearing in MLflow with metrics and artifacts
 
 ### 4. Live service
 
-Keep the MLflow server live on Chameleon so course staff can open it.
+Keep the MLflow server live on Chameleon until April 7 midnight.
 
 What course staff should be able to do:
 
 - open MLflow in a browser
-- inspect runs
+- inspect runs (3 total: baseline, xgboost_v1, xgboost_v2)
 - compare metrics
 - download artifacts
-
-## B2. Bonus Items If You Use The ML6.2 Path
-
-If you plan to claim bonus credit for the Ray path, prepare evidence for these:
-
-- Ray dashboard screenshot or video segment
-- checkpoint files visible in object storage or MinIO
-- job submission command and successful completion logs
-- if demonstrating fault tolerance, evidence that a resumed job continued after worker interruption
-- short explanation of how Ray improved robustness or tuning efficiency for GemSpot
 
 ## C. What Must Be True To Get Credit
 
 Make sure all of these are true:
 
-- all training runs were executed on Chameleon
+- all training runs were executed on Chameleon (not locally)
 - training ran inside Docker containers
-- every run is in MLflow
-- you used one configurable training script, not separate scripts for every candidate
-- you logged params, metrics, cost metrics, and environment info
-- you included at least one simple baseline and at least one stronger candidate
+- every run is tracked in MLflow
+- you used one configurable training script (`src/train.py`), not separate scripts
+- you logged params, metrics, cost metrics, and environment info for each run
+- you included a simple baseline plus stronger XGBoost candidates
+- the data was split by time (train on older data, validate on newer data)
+- system metrics (cpu, memory, disk) are logged
 
-## D. Suggested Gradescope Packaging
+## D. Gradescope Upload Guide
 
-Because course forms vary, prepare these items in advance:
+### Q1: Joint Responsibilities (1 point)
+- Upload `interfaces/will_visit_input.sample.json`
+- Upload `interfaces/will_visit_output.sample.json`
 
-- PDF report
-- video link
-- repo link plus commit SHA
-- MLflow URL
+### Q2.1: Training Runs Table (4 points)
+- Upload `gemspot_training_report.pdf` with the runs table
+- Verify all MLflow links are clickable
 
-If there is a free-text explanation box, paste:
+### Q2.2: Repository Artifacts (3 points)
+- Upload `Dockerfile`
+- Upload `train.py`, `data.py`, `training.py`, `utils.py`, `candidates.yaml`, `requirements.txt`
 
-- the public MLflow URL
-- the repo URL
-- the exact commit SHA you want graded
-- a sentence explaining which run or runs are your best candidates
-- if claiming bonus, a sentence explaining which Ray run demonstrates robustness or early-stopping benefits
+### Q2.3: Demo Video (1 point)
+- Upload video file or paste Google Drive / YouTube link
+
+### Q2.4: Live MLflow Service (1 point)
+- Paste: `http://YOUR_FLOATING_IP:8000`
+
+### Free-text box (if available)
+
+```
+MLflow URL: http://YOUR_FLOATING_IP:8000
+Repository: https://github.com/rohitshididnyu/GemSpot_training.git
+Commit SHA: [run git rev-parse --short HEAD]
+Best candidate: xgboost_v2 — highest avg precision (0.965) and recall (99.5%),
+handles 82/18 class imbalance with scale_pos_weight=4.7.
+```
 
 ## E. Final 5-Minute Sanity Check
 
@@ -120,14 +120,15 @@ Right before submission, verify:
 docker ps
 ```
 
-You should see your MLflow container.
+You should see `gemspot-mlflow-proj10` and `mlflow-postgres-proj10`.
 
 Open the MLflow URL in a browser and confirm:
 
 - the page loads
-- the experiment is visible
-- runs are not empty
+- experiment `GemSpot-WillVisit` is visible
+- 3 runs are present (baseline, xgboost_v1, xgboost_v2)
 - artifact links work
+- system metrics tab shows cpu/memory data
 
 Then check your repo tree:
 
