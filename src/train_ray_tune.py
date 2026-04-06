@@ -75,6 +75,12 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     """One Ray Tune trial: train XGBoost, report metrics, checkpoint."""
     import gc
     import traceback
+    import warnings
+
+    # Suppress Ray v2 deprecation warnings in worker processes
+    # (driver-side env vars don't propagate to workers)
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="ray")
+    os.environ["RAY_TRAIN_ENABLE_V2_MIGRATION_WARNINGS"] = "0"
 
     print(f"[trial] Starting trial with params: {sampled_params}", flush=True)
 
