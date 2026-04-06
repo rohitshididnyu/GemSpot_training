@@ -168,8 +168,8 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
                 except Exception as e:
                     print(f"[trial] WARNING: MLflow log_metrics failed: {e}", flush=True)
 
-            # Report metrics to Ray Tune (no checkpoint - avoids ray.train deprecation)
-            tune.report(**metrics)
+            # Report metrics to Ray Tune
+            ray.train.report(metrics=metrics)
     except Exception as e:
         print(f"[trial] FAILED during training: {e}", flush=True)
         traceback.print_exc()
