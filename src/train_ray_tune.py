@@ -19,10 +19,11 @@ import yaml
 
 # Fix Ray Tune verbose output bug in some versions
 os.environ.setdefault("RAY_AIR_NEW_OUTPUT", "0")
+os.environ.setdefault("RAY_TRAIN_ENABLE_V2_MIGRATION_WARNINGS", "0")
 
 from ray import tune  # noqa: E402
-from ray.tune import RunConfig  # noqa: E402
-from ray.train import CheckpointConfig, FailureConfig  # noqa: E402
+from ray.tune import Callback, CheckpointConfig, RunConfig  # noqa: E402
+from ray.tune import FailureConfig  # noqa: E402
 from ray.tune.schedulers import ASHAScheduler
 
 from gemspot_training.ray_data import make_xgboost_frame_bundle
@@ -221,7 +222,6 @@ def main() -> None:
                 num_to_keep=2,
                 checkpoint_score_attribute=metric,
                 checkpoint_score_order=mode,
-                checkpoint_at_end=False,
             ),
         ),
     )
