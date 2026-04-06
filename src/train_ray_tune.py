@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -22,7 +21,7 @@ os.environ.setdefault("RAY_AIR_NEW_OUTPUT", "0")
 os.environ.setdefault("RAY_TRAIN_ENABLE_V2_MIGRATION_WARNINGS", "0")
 
 from ray import tune  # noqa: E402
-from ray.tune import Callback, CheckpointConfig, RunConfig  # noqa: E402
+from ray.tune import RunConfig  # noqa: E402
 from ray.tune import FailureConfig  # noqa: E402
 from ray.tune.schedulers import ASHAScheduler
 
@@ -106,27 +105,8 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     total_rounds = int(static_cfg["num_boost_round"])
     report_every = int(static_cfg["report_every"])
 
-    # Resume from checkpoint if available
-    checkpoint = ray.train.get_checkpoint()
     booster = None
     completed_rounds = 0
-    if checkpoint:
-        try:
-            with checkpoint.as_directory() as ckpt_dir:
-                model_path = Path(ckpt_dir) / "model.ubj"
-                meta_path = Path(ckpt_dir) / "metadata.json"
-                if model_path.exists():
-                    booster = xgboost.Booster()
-                    booster.load_model(str(model_path))
-                if meta_path.exists():
-                    completed_rounds = int(
-                        json.loads(meta_path.read_text())["completed_rounds"]
-                    )
-            print(f"[trial] Resumed from checkpoint at round {completed_rounds}", flush=True)
-        except Exception as e:
-            print(f"[trial] WARNING: checkpoint resume failed: {e}, starting fresh", flush=True)
-            booster = None
-            completed_rounds = 0
 
     trial_id = os.getenv("TUNE_TRIAL_ID", "unknown")
 
@@ -188,14 +168,8 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
                 except Exception as e:
                     print(f"[trial] WARNING: MLflow log_metrics failed: {e}", flush=True)
 
-            # Save checkpoint and report
-            with tempfile.TemporaryDirectory() as ckpt_dir:
-                booster.save_model(str(Path(ckpt_dir) / "model.ubj"))
-                Path(ckpt_dir, "metadata.json").write_text(
-                    json.dumps({"completed_rounds": completed_rounds})
-                )
-                checkpoint = ray.train.Checkpoint.from_directory(ckpt_dir)
-                ray.train.report(metrics, checkpoint=checkpoint)
+            # Report metrics to Ray Tune (no checkpoint - avoids ray.train deprecation)
+            tune.report(**metrics)
     except Exception as e:
         print(f"[trial] FAILED during training: {e}", flush=True)
         traceback.print_exc()
@@ -266,26 +240,15 @@ def main() -> None:
             name=args.run_name,
             storage_path=storage_path,
             failure_config=FailureConfig(max_failures=max_failures),
-            checkpoint_config=CheckpointConfig(
-                num_to_keep=2,
-                checkpoint_score_attribute=metric,
-                checkpoint_score_order=mode,
-            ),
         ),
     )
 
     result_grid = tuner.fit()
     best = result_grid.get_best_result(metric=metric, mode=mode)
 
-    # Export best model
+    # Export best result summary
     artifact_dir = ensure_dir(args.artifact_dir)
-    best_model_path = artifact_dir / "best_tuned_model.ubj"
     best_summary_path = artifact_dir / "best_tuned_result.json"
-
-    with best.checkpoint.as_directory() as ckpt_dir:
-        src = Path(ckpt_dir) / "model.ubj"
-        if src.exists():
-            best_model_path.write_bytes(src.read_bytes())
 
     summary = {
         "run_name": args.run_name,
@@ -296,6 +259,7 @@ def main() -> None:
         "num_samples": num_samples,
     }
     best_summary_path.write_text(json.dumps(summary, indent=2))
+    best_model_path = artifact_dir / "best_tuned_model.ubj"
 
     # Log best result to MLflow
     if args.tracking_uri:
