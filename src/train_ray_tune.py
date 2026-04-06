@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -71,6 +73,54 @@ def build_search_space(search_space_cfg: dict) -> dict:
     return space
 
 
+def restore_trial_state() -> tuple[xgboost.Booster | None, int]:
+    """Restore the latest Tune checkpoint for this trial if one exists."""
+    checkpoint = tune.get_checkpoint()
+    if checkpoint is None:
+        return None, 0
+
+    with checkpoint.as_directory() as checkpoint_dir:
+        checkpoint_path = Path(checkpoint_dir)
+        model_path = checkpoint_path / "model.ubj"
+        state_path = checkpoint_path / "state.json"
+
+        booster: xgboost.Booster | None = None
+        if model_path.exists():
+            booster = xgboost.Booster()
+            booster.load_model(str(model_path))
+
+        completed_rounds = 0
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            completed_rounds = int(state.get("completed_rounds", 0))
+
+    return booster, completed_rounds
+
+
+def report_trial_progress(
+    booster: xgboost.Booster,
+    metrics: dict,
+    sampled_params: dict,
+    completed_rounds: int,
+) -> None:
+    """Persist a Tune checkpoint and report the latest metrics."""
+    with tempfile.TemporaryDirectory(prefix="gemspot-ray-tune-") as checkpoint_dir:
+        checkpoint_path = Path(checkpoint_dir)
+        booster.save_model(str(checkpoint_path / "model.ubj"))
+        (checkpoint_path / "state.json").write_text(
+            json.dumps(
+                {
+                    "completed_rounds": completed_rounds,
+                    "sampled_params": sampled_params,
+                    "metrics": metrics,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        tune.report(metrics, checkpoint=tune.Checkpoint.from_directory(checkpoint_dir))
+
+
 def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     """One Ray Tune trial: train XGBoost, report metrics, checkpoint."""
     import gc
@@ -111,10 +161,16 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     total_rounds = int(static_cfg["num_boost_round"])
     report_every = int(static_cfg["report_every"])
 
-    booster = None
-    completed_rounds = 0
+    booster, completed_rounds = restore_trial_state()
+    if completed_rounds:
+        print(
+            f"[trial] Resuming from checkpoint at round {completed_rounds}/{total_rounds}",
+            flush=True,
+        )
 
-    trial_id = os.getenv("TUNE_TRIAL_ID", "unknown")
+    trial_context = tune.get_context()
+    trial_id = os.getenv("TUNE_TRIAL_ID") or trial_context.get_trial_id() or "unknown"
+    trial_name = trial_context.get_trial_name() or f"trial-{trial_id}"
 
     # Optional MLflow logging per trial (wrapped in try/except so failures don't kill trial)
     mlflow_active = False
@@ -122,7 +178,7 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
         try:
             mlflow.set_tracking_uri(static_cfg["tracking_uri"])
             mlflow.set_experiment(static_cfg["experiment_name"])
-            mlflow.start_run(run_name=f"ray-tune-trial-{trial_id}", log_system_metrics=True)
+            mlflow.start_run(run_name=trial_name, log_system_metrics=True)
             mlflow.set_tags({
                 "project": "GemSpot",
                 "workflow": "ray-tune-xgboost",
@@ -161,8 +217,8 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
             })
 
             print(f"[trial] Round {completed_rounds}/{total_rounds} "
-                  f"roc_auc={metrics.get('roc_auc', 'N/A'):.4f} "
-                  f"val_logloss={metrics.get('validation_logloss', 'N/A'):.4f}",
+                  f"roc_auc={float(metrics.get('roc_auc', float('nan'))):.4f} "
+                  f"val_logloss={float(metrics.get('validation_logloss', float('nan'))):.4f}",
                   flush=True)
 
             if mlflow_active:
@@ -175,7 +231,12 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
                     print(f"[trial] WARNING: MLflow log_metrics failed: {e}", flush=True)
 
             # Report metrics to Ray Tune
-            ray.train.report(metrics=metrics)
+            report_trial_progress(
+                booster=booster,
+                metrics=metrics,
+                sampled_params=sampled_params,
+                completed_rounds=completed_rounds,
+            )
     except Exception as e:
         print(f"[trial] FAILED during training: {e}", flush=True)
         traceback.print_exc()
@@ -250,11 +311,24 @@ def main() -> None:
     )
 
     result_grid = tuner.fit()
-    best = result_grid.get_best_result(metric=metric, mode=mode)
+    try:
+        best = result_grid.get_best_result(metric=metric, mode=mode)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"No successful Ray Tune trial reported metric '{metric}'. "
+            "Check Ray trial logs under the run artifacts for the root cause."
+        ) from exc
 
     # Export best result summary
     artifact_dir = ensure_dir(args.artifact_dir)
     best_summary_path = artifact_dir / "best_tuned_result.json"
+    best_model_path = artifact_dir / "best_tuned_model.ubj"
+
+    if best.checkpoint:
+        with best.checkpoint.as_directory() as checkpoint_dir:
+            checkpoint_model_path = Path(checkpoint_dir) / "model.ubj"
+            if checkpoint_model_path.exists():
+                shutil.copy2(checkpoint_model_path, best_model_path)
 
     summary = {
         "run_name": args.run_name,
@@ -265,7 +339,6 @@ def main() -> None:
         "num_samples": num_samples,
     }
     best_summary_path.write_text(json.dumps(summary, indent=2))
-    best_model_path = artifact_dir / "best_tuned_model.ubj"
 
     # Log best result to MLflow
     if args.tracking_uri:

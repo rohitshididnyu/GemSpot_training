@@ -8,6 +8,7 @@ CONFIG_PATH="${CONFIG_PATH:-configs/ray_bonus.yaml}"
 RAY_EXTRA_ARGS="${RAY_EXTRA_ARGS:-}"
 TRACKING_URI_ARG=()
 EXPERIMENT_ARG=()
+RUN_NAME_ARG=()
 
 if [[ -n "${MLFLOW_TRACKING_URI:-}" ]]; then
   TRACKING_URI_ARG=(--tracking-uri "${MLFLOW_TRACKING_URI}")
@@ -15,6 +16,10 @@ fi
 
 if [[ -n "${RAY_EXPERIMENT_NAME:-}" ]]; then
   EXPERIMENT_ARG=(--experiment-name "${RAY_EXPERIMENT_NAME}")
+fi
+
+if [[ -n "${RAY_RUN_NAME:-}" ]]; then
+  RUN_NAME_ARG=(--run-name "${RAY_RUN_NAME}")
 fi
 
 read -r -a ray_extra_args <<< "${RAY_EXTRA_ARGS}"
@@ -28,5 +33,6 @@ ray job submit \
     --config "${CONFIG_PATH}" \
     --train-csv "${TRAIN_CSV}" \
     --val-csv "${VAL_CSV}" \
+    "${RUN_NAME_ARG[@]}" \
     "${TRACKING_URI_ARG[@]}" \
     "${EXPERIMENT_ARG[@]}"
