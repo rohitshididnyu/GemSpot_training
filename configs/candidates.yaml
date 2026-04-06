@@ -58,16 +58,17 @@ candidates:
       random_state: 42
       n_jobs: -1
 
-  # ---- XGBOOST V2 (tuned for imbalanced data, deeper trees) ----
+  # ---- XGBOOST V2 (tuned: handles class imbalance correctly, more trees) ----
   - name: xgboost_v2
     kind: xgboost
-    notes: Tuned XGBoost. Lower learning rate, deeper trees, scale_pos_weight=4.7 for class imbalance, subsampling for regularization.
+    notes: Tuned XGBoost. Lower learning rate, deeper trees, scale_pos_weight=0.2 to correctly handle 83/17 class imbalance (down-weight majority positive class), subsampling for regularization, more boosting rounds.
     params:
-      learning_rate: 0.1
+      learning_rate: 0.05
       max_depth: 8
-      n_estimators: 200
-      scale_pos_weight: 4.7
-      subsample: 0.9
+      n_estimators: 300
+      scale_pos_weight: 0.2
+      subsample: 0.85
       colsample_bytree: 0.8
+      min_child_weight: 3
       random_state: 42
       n_jobs: -1
