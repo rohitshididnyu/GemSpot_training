@@ -159,6 +159,15 @@ unset DOCKER_EXTRA_ARGS
 bash scripts/run_training_container.sh
 ```
 
+### retraining
+```bash
+cd ~/gemspot && git pull  
+export PROJECT_SUFFIX=proj10
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+export MLFLOW_TRACKING_URI=http://${PRIVATE_IP}:8000
+bash scripts/run_training_container.sh
+```
+
 This trains all 3 candidates (baseline, xgboost_v1, xgboost_v2) and logs to MLflow.
 
 ### STOP SCREEN RECORDING
