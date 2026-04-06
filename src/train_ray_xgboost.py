@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import mlflow
-import numpy as np
 import ray
 import ray.data
 import xgboost
@@ -18,7 +16,7 @@ from ray import train
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.xgboost import RayTrainReportCallback, XGBoostTrainer
 
-from gemspot_training.ray_data import make_xgboost_frame_bundle, make_xgboost_training_frames
+from gemspot_training.ray_data import make_xgboost_frame_bundle
 from gemspot_training.training import compute_binary_metrics
 from gemspot_training.utils import ensure_dir, flatten_dict, get_git_sha
 
@@ -106,9 +104,10 @@ def main() -> None:
 
     # Prepare data
     bundle = make_xgboost_frame_bundle(args.train_csv, args.val_csv, config)
-    train_frame, val_frame = make_xgboost_training_frames(
-        args.train_csv, args.val_csv, config, label_column="label"
-    )
+    train_frame = bundle.train_features.copy()
+    train_frame["label"] = bundle.train_target.values
+    val_frame = bundle.val_features.copy()
+    val_frame["label"] = bundle.val_target.values
 
     ray_cfg = config["ray_train"]
     num_workers = args.num_workers or int(ray_cfg["num_workers"])
@@ -146,9 +145,9 @@ def main() -> None:
             storage_path=storage_path,
             failure_config=FailureConfig(max_failures=max_failures),
             checkpoint_config=CheckpointConfig(
-                checkpoint_frequency=int(ray_cfg["checkpoint_frequency"]),
-                checkpoint_at_end=True,
                 num_to_keep=2,
+                checkpoint_score_attribute="validation_logloss",
+                checkpoint_score_order="min",
             ),
         ),
     )
