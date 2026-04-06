@@ -221,6 +221,7 @@ def main() -> None:
                 num_to_keep=2,
                 checkpoint_score_attribute=metric,
                 checkpoint_score_order=mode,
+                checkpoint_at_end=False,
             ),
         ),
     )

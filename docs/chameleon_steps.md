@@ -131,6 +131,12 @@ docker build -t gemspot-train-${PROJECT_SUFFIX} .
 docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} python3 scripts/split_dataset.py 
 ```
 
+### Then after upload, re-split on Chameleon: in req 4000
+```bash
+docker run --rm -v "$(pwd):/app" gemspot-train-${PROJECT_SUFFIX} python3 scripts/split_dataset.py --max-train-rows 350000 --max-val-rows 35000
+
+```
+
 This creates:
 
 - `data/demo/gemspot_train.csv` — 303,117 rows (before May 2021)
