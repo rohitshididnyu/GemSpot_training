@@ -74,12 +74,32 @@ def build_search_space(search_space_cfg: dict) -> dict:
 
 def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     """One Ray Tune trial: train XGBoost, report metrics, checkpoint."""
-    bundle = make_xgboost_frame_bundle(
-        static_cfg["train_csv"], static_cfg["val_csv"], static_cfg["config"]
-    )
+    import gc
+    import traceback
 
-    dtrain = xgboost.DMatrix(bundle.train_features, label=bundle.train_target)
-    dval = xgboost.DMatrix(bundle.val_features, label=bundle.val_target)
+    print(f"[trial] Starting trial with params: {sampled_params}", flush=True)
+
+    try:
+        bundle = make_xgboost_frame_bundle(
+            static_cfg["train_csv"], static_cfg["val_csv"], static_cfg["config"]
+        )
+        print(f"[trial] Data loaded: train={len(bundle.train_features)}, val={len(bundle.val_features)}", flush=True)
+    except Exception as e:
+        print(f"[trial] FAILED to load data: {e}", flush=True)
+        traceback.print_exc()
+        raise
+
+    try:
+        dtrain = xgboost.DMatrix(bundle.train_features, label=bundle.train_target)
+        dval = xgboost.DMatrix(bundle.val_features, label=bundle.val_target)
+        # Free pandas frames immediately to reduce memory
+        del bundle.train_features, bundle.val_features
+        gc.collect()
+        print("[trial] DMatrix created, pandas frames freed", flush=True)
+    except Exception as e:
+        print(f"[trial] FAILED to create DMatrix: {e}", flush=True)
+        traceback.print_exc()
+        raise
 
     params = dict(static_cfg["base_params"])
     params.update(sampled_params)
@@ -91,31 +111,44 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
     booster = None
     completed_rounds = 0
     if checkpoint:
-        with checkpoint.as_directory() as ckpt_dir:
-            model_path = Path(ckpt_dir) / "model.ubj"
-            meta_path = Path(ckpt_dir) / "metadata.json"
-            if model_path.exists():
-                booster = xgboost.Booster()
-                booster.load_model(str(model_path))
-            if meta_path.exists():
-                completed_rounds = int(
-                    json.loads(meta_path.read_text())["completed_rounds"]
-                )
+        try:
+            with checkpoint.as_directory() as ckpt_dir:
+                model_path = Path(ckpt_dir) / "model.ubj"
+                meta_path = Path(ckpt_dir) / "metadata.json"
+                if model_path.exists():
+                    booster = xgboost.Booster()
+                    booster.load_model(str(model_path))
+                if meta_path.exists():
+                    completed_rounds = int(
+                        json.loads(meta_path.read_text())["completed_rounds"]
+                    )
+            print(f"[trial] Resumed from checkpoint at round {completed_rounds}", flush=True)
+        except Exception as e:
+            print(f"[trial] WARNING: checkpoint resume failed: {e}, starting fresh", flush=True)
+            booster = None
+            completed_rounds = 0
 
     trial_id = os.getenv("TUNE_TRIAL_ID", "unknown")
 
-    # Optional MLflow logging per trial
-    if static_cfg["tracking_uri"]:
-        mlflow.set_tracking_uri(static_cfg["tracking_uri"])
-        mlflow.set_experiment(static_cfg["experiment_name"])
-        mlflow.start_run(run_name=f"ray-tune-trial-{trial_id}", log_system_metrics=True)
-        mlflow.set_tags({
-            "project": "GemSpot",
-            "workflow": "ray-tune-xgboost",
-            "trial_id": trial_id,
-            "code_version": get_git_sha(),
-        })
-        mlflow.log_params(flatten_dict({"sampled": sampled_params}))
+    # Optional MLflow logging per trial (wrapped in try/except so failures don't kill trial)
+    mlflow_active = False
+    if static_cfg.get("tracking_uri"):
+        try:
+            mlflow.set_tracking_uri(static_cfg["tracking_uri"])
+            mlflow.set_experiment(static_cfg["experiment_name"])
+            mlflow.start_run(run_name=f"ray-tune-trial-{trial_id}", log_system_metrics=True)
+            mlflow.set_tags({
+                "project": "GemSpot",
+                "workflow": "ray-tune-xgboost",
+                "trial_id": trial_id,
+                "code_version": get_git_sha(),
+            })
+            mlflow.log_params(flatten_dict({"sampled": sampled_params}))
+            mlflow_active = True
+            print(f"[trial] MLflow logging started for trial {trial_id}", flush=True)
+        except Exception as e:
+            print(f"[trial] WARNING: MLflow setup failed (non-fatal): {e}", flush=True)
+            mlflow_active = False
 
     try:
         while completed_rounds < total_rounds:
@@ -141,11 +174,19 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
                 "validation_logloss": float(evals_result["validation"]["logloss"][-1]),
             })
 
-            if static_cfg["tracking_uri"]:
-                mlflow.log_metrics(
-                    {k: float(v) for k, v in metrics.items() if isinstance(v, (float, int))},
-                    step=completed_rounds,
-                )
+            print(f"[trial] Round {completed_rounds}/{total_rounds} "
+                  f"roc_auc={metrics.get('roc_auc', 'N/A'):.4f} "
+                  f"val_logloss={metrics.get('validation_logloss', 'N/A'):.4f}",
+                  flush=True)
+
+            if mlflow_active:
+                try:
+                    mlflow.log_metrics(
+                        {k: float(v) for k, v in metrics.items() if isinstance(v, (float, int))},
+                        step=completed_rounds,
+                    )
+                except Exception as e:
+                    print(f"[trial] WARNING: MLflow log_metrics failed: {e}", flush=True)
 
             # Save checkpoint and report
             with tempfile.TemporaryDirectory() as ckpt_dir:
@@ -155,9 +196,16 @@ def train_trial(sampled_params: dict, static_cfg: dict) -> None:
                 )
                 checkpoint = ray.train.Checkpoint.from_directory(ckpt_dir)
                 ray.train.report(metrics, checkpoint=checkpoint)
+    except Exception as e:
+        print(f"[trial] FAILED during training: {e}", flush=True)
+        traceback.print_exc()
+        raise
     finally:
-        if static_cfg["tracking_uri"] and mlflow.active_run():
-            mlflow.end_run()
+        if mlflow_active and mlflow.active_run():
+            try:
+                mlflow.end_run()
+            except Exception:
+                pass
 
 
 def main() -> None:
