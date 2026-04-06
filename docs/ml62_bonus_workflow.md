@@ -20,7 +20,7 @@ Complete step-by-step guide for the bonus part of the GemSpot training assignmen
 ## Prerequisites
 
 Before starting, make sure:
-- Your ML6 main submission is already running (MLflow server at `http://129.114.24.253:8000`)
+- Your ML6 main submission is already running (MLflow server at `http://129.114.26.151:8000`)
 - You have the split data files (`gemspot_train.csv`, `gemspot_val.csv`) from the main workflow
 - The repo is pushed to GitHub with all Ray bonus files
 
@@ -94,7 +94,7 @@ Now copy the split dataset from your MLflow server (which already has the data).
 Open a **second SSH terminal to your MLflow server** and run:
 
 ```bash
-# ON THE MLFLOW SERVER (129.114.24.253):
+# ON THE MLFLOW SERVER (129.114.26.151):
 scp ~/gemspot/data/demo/gemspot_train.csv cc@RAY_IP:~/gemspot/data/demo/
 scp ~/gemspot/data/demo/gemspot_val.csv cc@RAY_IP:~/gemspot/data/demo/
 ```
@@ -179,7 +179,7 @@ Open in browser:
 Set your MLflow server IP (the one from the main ML6 submission):
 
 ```bash
-export MLFLOW_IP=129.114.24.253
+export MLFLOW_IP=129.114.26.151
 ```
 
 Run the Ray Tune job:
@@ -254,7 +254,7 @@ To **demonstrate fault tolerance** (impressive for bonus):
 
 ## Step 8: Verify in MLflow
 
-Open `http://129.114.24.253:8000` (your MLflow server) and check:
+Open `http://129.114.26.151:8000` (your MLflow server) and check:
 
 - **Experiment**: `GemSpot-WillVisit-RayTune` — should show individual trial runs + best summary
 - **Experiment**: `GemSpot-WillVisit-RayTrain` — should show the distributed training run (if you did Step 7)
@@ -293,7 +293,7 @@ Key Ray features demonstrated:
 Dashboards:
 - Ray Dashboard: http://RAY_IP:8265
 - MinIO Console: http://RAY_IP:9001
-- MLflow: http://129.114.24.253:8000
+- MLflow: http://129.114.26.151:8000
 ```
 
 ---
@@ -317,7 +317,7 @@ docker compose -f docker/docker-compose-ray.yaml down -v
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| MLflow | `http://129.114.24.253:8000` | Experiment tracking (main + bonus) |
+| MLflow | `http://129.114.26.151:8000` | Experiment tracking (main + bonus) |
 | Ray Dashboard | `http://RAY_IP:8265` | Ray cluster status, job progress |
 | MinIO Console | `http://RAY_IP:9001` | Checkpoint storage browser |
 

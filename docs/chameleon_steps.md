@@ -46,7 +46,7 @@ Create these Chameleon resources:
 ### SSH into the server
 
 ```bash
-ssh -i ~/.ssh/id_rsa_chameleon cc@129.114.24.253
+ssh -i ~/.ssh/id_rsa_chameleon cc@129.114.26.151
 ```
 
 ### Format and mount persistent volume
