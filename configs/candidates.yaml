@@ -57,17 +57,6 @@ candidates:
       random_state: 42
       n_jobs: -1
 
-  # ---- RANDOM FOREST (ensemble of decision trees) ----
-  - name: random_forest
-    kind: random_forest
-    notes: Bagged ensemble of decision trees. More robust to overfitting than a single tree. Serves as a non-boosted tree baseline to compare against XGBoost.
-    params:
-      n_estimators: 100
-      max_depth: 8
-      min_samples_split: 5
-      min_samples_leaf: 2
-      random_state: 42
-      n_jobs: -1
 
   # ---- HIST GRADIENT BOOSTING (sklearn native boosting) ----
   - name: hist_gradient_boosting
@@ -105,5 +94,4 @@ candidates:
       min_child_weight: 2
       reg_lambda: 1.5
       random_state: 42
-      n_jobs: 4
-      tree_method: hist
+      n_jobs: -1
