@@ -124,6 +124,11 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
 
         print(json.dumps(summary, indent=2))
 
+        # Free model memory before next candidate
+        del pipeline, predictions, scores
+        import gc
+        gc.collect()
+
 
 def main() -> None:
     args = parse_args()
@@ -151,6 +156,9 @@ def main() -> None:
             print(f">>> ERROR training {candidate_cfg['name']}: {e}", flush=True)
             import traceback
             traceback.print_exc()
+        finally:
+            import gc
+            gc.collect()
 
 
 if __name__ == "__main__":
