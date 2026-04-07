@@ -8,16 +8,19 @@ Your goal is to show that:
 
 - you can run training inside a Docker container on Chameleon
 - each training run is tracked in MLflow
-- you have a baseline and two tuned XGBoost candidates
+- you have a baseline and multiple model candidates across different algorithms
 - you can compare quality and cost tradeoffs
 
 The model predicts: given a user and a candidate place, will the user visit? (`will_visit` = 0 or 1)
 
-Three candidates are trained from one config file:
+Six candidates are trained from one config file:
 
 - `baseline` — naive dummy that always predicts the majority class
+- `logistic_regression_baseline` — linear model baseline (fast, interpretable)
+- `random_forest` — bagged ensemble of decision trees
+- `hist_gradient_boosting` — sklearn native histogram-based gradient boosting
 - `xgboost_v1` — XGBoost with default params (no imbalance handling)
-- `xgboost_v2` — tuned XGBoost with `scale_pos_weight=4.7` for class imbalance
+- `xgboost_v2` — tuned XGBoost with regularization (subsample, colsample, L2)
 
 ## 2. What Resources To Create
 
@@ -165,16 +168,29 @@ unset DOCKER_EXTRA_ARGS
 bash scripts/run_training_container.sh
 ```
 
-### retraining
+### Retraining (direct Docker command — recommended)
 ```bash
-cd ~/gemspot && git pull  
+cd ~/gemspot && git pull
+docker run --rm \
+  -v "$(pwd):/app" \
+  -e MLFLOW_TRACKING_URI=http://129.114.26.151:8000 \
+  gemspot-train-proj10 python3 src/train.py \
+    --config configs/candidates.yaml \
+    --train-csv data/demo/gemspot_train.csv \
+    --val-csv data/demo/gemspot_val.csv \
+    --tracking-uri http://129.114.26.151:8000
+```
+
+### Retraining (via shell script — alternative)
+```bash
+cd ~/gemspot && git pull
 export PROJECT_SUFFIX=proj10
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
 export MLFLOW_TRACKING_URI=http://${PRIVATE_IP}:8000
 bash scripts/run_training_container.sh
 ```
 
-This trains all 3 candidates (baseline, xgboost_v1, xgboost_v2) and logs to MLflow.
+This trains all 6 candidates (baseline, logistic_regression_baseline, random_forest, hist_gradient_boosting, xgboost_v1, xgboost_v2) and logs to MLflow.
 
 ### STOP SCREEN RECORDING
 
@@ -183,7 +199,7 @@ This trains all 3 candidates (baseline, xgboost_v1, xgboost_v2) and logs to MLfl
 Open `http://MLFLOW_IP:8000` and check:
 
 - experiment `GemSpot-WillVisit`
-- 3 runs (baseline, xgboost_v1, xgboost_v2)
+- 6 runs (baseline, logistic_regression_baseline, random_forest, hist_gradient_boosting, xgboost_v1, xgboost_v2)
 - parameters, metrics, artifacts for each run
 - system metrics (cpu, memory, disk, network)
 
@@ -206,9 +222,12 @@ Copy the Markdown table output for your PDF report.
 ## 8. What To Say If Asked Why These Models
 
 - GemSpot uses structured tabular data (user preferences, place metadata, category encodings)
-- XGBoost is the state-of-the-art for tabular classification
-- the dummy baseline establishes a lower bound (ROC-AUC = 0.50)
-- xgboost_v1 proves the model architecture works with defaults
-- xgboost_v2 improves on v1 by handling the 82/18 class imbalance with `scale_pos_weight=4.7`
+- We train 6 candidates to compare across model families (linear, tree ensemble, boosting)
+- `baseline` (dummy) establishes a lower bound (ROC-AUC = 0.50)
+- `logistic_regression_baseline` tests if a simple linear boundary is sufficient
+- `random_forest` provides a non-boosted tree ensemble comparison
+- `hist_gradient_boosting` is sklearn's native boosting — same approach as XGBoost, different framework
+- `xgboost_v1` proves XGBoost works with defaults
+- `xgboost_v2` improves on v1 with lower learning rate + regularization (subsample, colsample, L2)
 - the time-based split ensures we validate on future data, not random samples
-- MLflow lets us compare quality against runtime cost
+- MLflow lets us compare quality against runtime cost across all 6 models

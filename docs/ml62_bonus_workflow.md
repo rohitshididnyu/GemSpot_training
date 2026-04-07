@@ -9,7 +9,7 @@ Complete step-by-step guide for the bonus part of the GemSpot training assignmen
 - **Fault tolerance** via FailureConfig (auto-retry on crash)
 - **Checkpointing** to S3-compatible object storage (MinIO)
 - **MLflow integration** logging every trial's metrics
-- All on the same real dataset (337k rows, 85 features) used for the main ML6 submission
+- All on the same real dataset (350k rows, 85 features) used for the main ML6 submission (6 candidates: baseline, logistic_regression, random_forest, hist_gradient_boosting, xgboost_v1, xgboost_v2)
 
 ## Your Reservation Details
 
