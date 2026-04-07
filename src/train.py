@@ -143,7 +143,14 @@ def main() -> None:
     dataset_bundle = make_dataset_bundle(args.train_csv, args.val_csv, config)
 
     for candidate_cfg in config["candidates"]:
-        train_candidate(candidate_cfg, config, dataset_bundle, artifact_dir)
+        try:
+            print(f"\n>>> Starting candidate: {candidate_cfg['name']} ({candidate_cfg['kind']})", flush=True)
+            train_candidate(candidate_cfg, config, dataset_bundle, artifact_dir)
+            print(f">>> Finished candidate: {candidate_cfg['name']}\n", flush=True)
+        except Exception as e:
+            print(f">>> ERROR training {candidate_cfg['name']}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
