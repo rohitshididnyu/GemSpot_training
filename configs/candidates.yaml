@@ -105,4 +105,5 @@ candidates:
       min_child_weight: 2
       reg_lambda: 1.5
       random_state: 42
-      n_jobs: -1
+      n_jobs: 4
+      tree_method: hist
