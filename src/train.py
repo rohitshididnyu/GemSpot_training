@@ -113,6 +113,21 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
         mlflow.log_artifact(str(artifact_path), artifact_path="exported_models")
         mlflow.sklearn.log_model(pipeline, artifact_path="model")
 
+        # Save reference statistics for inference-time drift detection
+        feature_columns = list(dataset_bundle.val_features.columns)
+        reference_stats = {}
+        for col in feature_columns:
+            vals = dataset_bundle.val_features[col].dropna()
+            if len(vals) > 0:
+                reference_stats[col] = {
+                    "mean": float(vals.mean()),
+                    "std": float(vals.std()),
+                    "min": float(vals.min()),
+                    "max": float(vals.max()),
+                    "values": vals.sample(min(500, len(vals)), random_state=42).tolist(),
+                }
+        mlflow.log_text(json.dumps(reference_stats, indent=2), "reference_stats.json")
+
         summary = {
             "candidate": candidate_cfg["name"],
             "kind": candidate_cfg["kind"],
