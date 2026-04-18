@@ -94,6 +94,41 @@ def validate_schema(frame: pd.DataFrame, required_columns: Iterable[str]) -> Non
         raise ValueError(f"Dataset is missing required columns: {missing}")
 
 
+def enforce_canonical_schema(
+    frame: pd.DataFrame,
+    canonical_columns: list[str],
+) -> pd.DataFrame:
+    """Ensure the DataFrame has EXACTLY the canonical columns.
+
+    - Missing canonical columns → hard error
+    - Extra columns             → silently dropped (with a printed warning)
+
+    Returns a new DataFrame with columns in the canonical order.
+    """
+    if not canonical_columns:
+        return frame
+
+    present = set(frame.columns)
+    canonical = set(canonical_columns)
+
+    missing = canonical - present
+    if missing:
+        raise ValueError(
+            f"Input CSV is missing {len(missing)} required canonical columns: "
+            f"{sorted(missing)}. Canonical schema is: {canonical_columns}"
+        )
+
+    extras = present - canonical
+    if extras:
+        print(
+            f"  [schema] Dropping {len(extras)} non-canonical column(s): {sorted(extras)}",
+            flush=True,
+        )
+
+    # Keep only canonical columns, in canonical order
+    return frame.loc[:, canonical_columns].copy()
+
+
 # ---------------------------------------------------------------------------
 # Main preparation
 # ---------------------------------------------------------------------------
@@ -110,6 +145,7 @@ def prepare_frame(frame: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     dataset_cfg = config["dataset"]
     target = dataset_cfg["target_column"]
+    canonical_columns = dataset_cfg.get("canonical_columns", [])
     drop_cols = dataset_cfg.get("drop_columns", [])
     scalar_features = dataset_cfg.get("scalar_numeric_features", [])
     list_features = dataset_cfg.get("list_encoded_features", {})
@@ -119,9 +155,11 @@ def prepare_frame(frame: pd.DataFrame, config: dict) -> pd.DataFrame:
     validate_schema(frame, [target])
 
     print(f"Preparing frame ({len(frame):,} rows)...", flush=True)
-    prepared = frame.copy()
+    # Enforce the canonical schema FIRST — this is the contract for all CSVs.
+    # Missing canonical columns → error; extras are silently dropped.
+    prepared = enforce_canonical_schema(frame, canonical_columns)
 
-    # Drop unwanted columns
+    # Drop unwanted columns (IDs, etc.)
     cols_to_drop = [c for c in drop_cols if c in prepared.columns]
     prepared = prepared.drop(columns=cols_to_drop)
 
@@ -176,15 +214,40 @@ def make_dataset_bundle(
 
     target = config["dataset"]["target_column"]
 
-    # Also drop any remaining non-feature columns that slipped through
+    # Drop non-feature columns (target + any object-dtype columns).
+    # This protects against schema drift: if a new CSV silently introduces
+    # an extra column (e.g. 'price' in initial_training_set_new.csv),
+    # it would otherwise leak into the feature matrix.
     non_feature_cols = [target]
     for col in train_frame.columns:
         if train_frame[col].dtype == object:
             non_feature_cols.append(col)
 
+    train_features = train_frame.drop(columns=non_feature_cols, errors="ignore")
+    val_features = val_frame.drop(columns=non_feature_cols, errors="ignore")
+
+    # Align validation columns to training columns (critical for retraining).
+    # If val has a column train doesn't (or vice versa), we either fill with 0
+    # or drop the extra, so downstream sklearn pipelines never see a mismatch.
+    train_cols = set(train_features.columns)
+    val_cols = set(val_features.columns)
+    missing_in_val = train_cols - val_cols
+    extra_in_val = val_cols - train_cols
+
+    if missing_in_val:
+        print(f"  [schema] Filling {len(missing_in_val)} columns missing in val with 0", flush=True)
+        for col in missing_in_val:
+            val_features[col] = 0.0
+    if extra_in_val:
+        print(f"  [schema] Dropping {len(extra_in_val)} extra columns from val: {sorted(extra_in_val)[:5]}...", flush=True)
+        val_features = val_features.drop(columns=list(extra_in_val))
+
+    # Ensure column order matches
+    val_features = val_features[train_features.columns]
+
     return DatasetBundle(
-        train_features=train_frame.drop(columns=non_feature_cols, errors="ignore"),
+        train_features=train_features,
         train_target=train_frame[target],
-        val_features=val_frame.drop(columns=non_feature_cols, errors="ignore"),
+        val_features=val_features,
         val_target=val_frame[target],
     )

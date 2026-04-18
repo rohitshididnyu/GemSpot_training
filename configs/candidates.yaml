@@ -3,11 +3,32 @@ experiment_name: GemSpot-WillVisit
 dataset:
   target_column: will_visit
 
-  # Columns to drop before training (IDs and redundant raw text)
+  # ──────────────────────────────────────────────────────────────────────
+  # CANONICAL SCHEMA — the single source of truth.
+  # Every CSV used for training / retraining MUST have EXACTLY these 10
+  # columns. No more, no less. data.py enforces this:
+  #   - Missing columns → hard error
+  #   - Extra columns   → silently dropped with a warning
+  # This prevents schema drift between old CSV (`category`), new CSV
+  # (`price`), and any future files.
+  # ──────────────────────────────────────────────────────────────────────
+  canonical_columns:
+    - user_id
+    - gmap_id
+    - time
+    - category_encoded
+    - avg_rating
+    - location_popularity
+    - destination_vibe_tag
+    - user_total_visits
+    - user_personal_preferences
+    - will_visit
+
+  # Columns removed from feature matrix before training.
+  # All IDs must be here — they are identifiers, not predictors.
   drop_columns:
     - user_id
     - gmap_id
-    - category   # redundant: already encoded in category_encoded
 
   # Plain numeric columns kept as-is
   scalar_numeric_features:
