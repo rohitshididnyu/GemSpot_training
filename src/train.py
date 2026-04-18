@@ -12,7 +12,7 @@ import mlflow.sklearn
 import numpy as np
 import yaml
 
-from gemspot_training.data import make_dataset_bundle
+from gemspot_training.data import make_dataset_bundle, make_dataset_bundle_from_parquet
 from gemspot_training.training import build_pipeline, compute_binary_metrics
 from gemspot_training.utils import (
     collect_environment_info,
@@ -26,8 +26,23 @@ from gemspot_training.utils import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train GemSpot recommendation models.")
     parser.add_argument("--config", required=True, help="Path to YAML config file.")
-    parser.add_argument("--train-csv", required=True, help="Path to training CSV.")
-    parser.add_argument("--val-csv", required=True, help="Path to validation CSV.")
+    parser.add_argument(
+        "--train-csv",
+        default=None,
+        help="Path to training CSV. Mutually exclusive with --parquet-path.",
+    )
+    parser.add_argument(
+        "--val-csv",
+        default=None,
+        help="Path to validation CSV. Mutually exclusive with --parquet-path.",
+    )
+    parser.add_argument(
+        "--parquet-path",
+        default=None,
+        help="Path to a parquet file, local directory of parquet files, or "
+             "s3://... URL. When provided, the `split` column is used to "
+             "partition train/val automatically (no CSVs required).",
+    )
     parser.add_argument(
         "--experiment-name",
         default=None,
@@ -160,7 +175,18 @@ def main() -> None:
     mlflow.enable_system_metrics_logging()
 
     artifact_dir = ensure_dir(args.artifact_dir)
-    dataset_bundle = make_dataset_bundle(args.train_csv, args.val_csv, config)
+
+    # Input selection: either parquet (preferred for the datalake pipeline)
+    # or the legacy CSV pair. Exactly one must be provided.
+    if args.parquet_path and (args.train_csv or args.val_csv):
+        raise SystemExit("Use either --parquet-path OR (--train-csv + --val-csv), not both.")
+    if args.parquet_path:
+        print(f"Loading dataset from parquet source: {args.parquet_path}", flush=True)
+        dataset_bundle = make_dataset_bundle_from_parquet(args.parquet_path, config)
+    else:
+        if not (args.train_csv and args.val_csv):
+            raise SystemExit("Provide either --parquet-path, or both --train-csv and --val-csv.")
+        dataset_bundle = make_dataset_bundle(args.train_csv, args.val_csv, config)
 
     for candidate_cfg in config["candidates"]:
         try:

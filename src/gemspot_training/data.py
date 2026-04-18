@@ -94,6 +94,25 @@ def validate_schema(frame: pd.DataFrame, required_columns: Iterable[str]) -> Non
         raise ValueError(f"Dataset is missing required columns: {missing}")
 
 
+def apply_column_rename(
+    frame: pd.DataFrame,
+    rename_map: dict[str, str] | None,
+) -> pd.DataFrame:
+    """Rename parquet-style columns (location_*) to canonical CSV names.
+
+    Only renames columns that exist; non-matches are ignored. Safe to call
+    on any input, making the downstream code agnostic to whether the data
+    came from a CSV or from the Iceberg/parquet datalake.
+    """
+    if not rename_map:
+        return frame
+    applicable = {src: dst for src, dst in rename_map.items() if src in frame.columns}
+    if applicable:
+        print(f"  [schema] Renaming {len(applicable)} column(s): {applicable}", flush=True)
+        return frame.rename(columns=applicable)
+    return frame
+
+
 def enforce_canonical_schema(
     frame: pd.DataFrame,
     canonical_columns: list[str],
@@ -114,7 +133,7 @@ def enforce_canonical_schema(
     missing = canonical - present
     if missing:
         raise ValueError(
-            f"Input CSV is missing {len(missing)} required canonical columns: "
+            f"Input is missing {len(missing)} required canonical columns: "
             f"{sorted(missing)}. Canonical schema is: {canonical_columns}"
         )
 
@@ -146,18 +165,25 @@ def prepare_frame(frame: pd.DataFrame, config: dict) -> pd.DataFrame:
     dataset_cfg = config["dataset"]
     target = dataset_cfg["target_column"]
     canonical_columns = dataset_cfg.get("canonical_columns", [])
+    rename_map = dataset_cfg.get("column_rename", {})
     drop_cols = dataset_cfg.get("drop_columns", [])
     scalar_features = dataset_cfg.get("scalar_numeric_features", [])
     list_features = dataset_cfg.get("list_encoded_features", {})
     interaction_cfg = dataset_cfg.get("interaction_features", [])
 
-    # Validate minimum required columns
-    validate_schema(frame, [target])
-
     print(f"Preparing frame ({len(frame):,} rows)...", flush=True)
-    # Enforce the canonical schema FIRST — this is the contract for all CSVs.
-    # Missing canonical columns → error; extras are silently dropped.
-    prepared = enforce_canonical_schema(frame, canonical_columns)
+
+    # STEP 1: Apply column renames (parquet `location_id` → `gmap_id`, etc.)
+    # BEFORE validating the target or enforcing the canonical schema.
+    prepared = apply_column_rename(frame, rename_map)
+
+    # STEP 2: Validate target column exists (after renames)
+    validate_schema(prepared, [target])
+
+    # STEP 3: Enforce the canonical schema — this is the contract for
+    # every source (CSV or parquet). Missing canonical cols → hard error;
+    # extras (e.g. `split`, `pipeline_run_date`) are silently dropped.
+    prepared = enforce_canonical_schema(prepared, canonical_columns)
 
     # Drop unwanted columns (IDs, etc.)
     cols_to_drop = [c for c in drop_cols if c in prepared.columns]
@@ -209,8 +235,37 @@ def make_dataset_bundle(
     val_csv: str | Path,
     config: dict,
 ) -> DatasetBundle:
-    train_frame = prepare_frame(load_csv(train_csv), config)
-    val_frame = prepare_frame(load_csv(val_csv), config)
+    return _assemble_bundle(
+        load_csv(train_csv),
+        load_csv(val_csv),
+        config,
+    )
+
+
+def make_dataset_bundle_from_parquet(
+    parquet_source: str,
+    config: dict,
+) -> DatasetBundle:
+    """Build a DatasetBundle from a single parquet source using its
+    built-in `split` column for the train/eval partition.
+
+    `parquet_source` may be a local file, a local directory (latest
+    .parquet is picked), or an s3://... URL (MinIO/S3 — latest object
+    under the prefix is picked).
+    """
+    from .parquet_loader import load_and_split_parquet
+    bundle = load_and_split_parquet(parquet_source, config)
+    return _assemble_bundle(bundle.train_frame, bundle.eval_frame, config)
+
+
+def _assemble_bundle(
+    raw_train: pd.DataFrame,
+    raw_val: pd.DataFrame,
+    config: dict,
+) -> DatasetBundle:
+    """Shared assembly step used by both CSV and parquet loaders."""
+    train_frame = prepare_frame(raw_train, config)
+    val_frame = prepare_frame(raw_val, config)
 
     target = config["dataset"]["target_column"]
 

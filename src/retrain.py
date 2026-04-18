@@ -39,6 +39,10 @@ import yaml
 from sklearn.pipeline import Pipeline
 
 from gemspot_training.data import load_csv, prepare_frame
+from gemspot_training.parquet_loader import (
+    filter_latest_pipeline_date,
+    load_and_split_parquet,
+)
 from gemspot_training.training import build_pipeline, compute_binary_metrics
 from gemspot_training.utils import (
     collect_environment_info,
@@ -62,13 +66,30 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--new-data-csv",
-        required=True,
-        help="Path to the NEW training CSV (e.g. initial_training_set_new.csv).",
+        default=None,
+        help="Path to the NEW training CSV. Mutually exclusive with --parquet-path.",
     )
     parser.add_argument(
         "--val-csv",
-        required=True,
-        help="Validation CSV for evaluating old vs new model (same used during training).",
+        default=None,
+        help="Validation CSV for evaluating old vs new model. "
+             "Ignored when --parquet-path is used (parquet `split` column drives it).",
+    )
+    parser.add_argument(
+        "--parquet-path",
+        default=None,
+        help="Path to parquet file, local dir, or s3://... URL "
+             "(e.g. s3://agent-datalake/iceberg/adventurelog.db/training_data/data). "
+             "When given, the latest parquet is resolved and its `split` column "
+             "partitions train/eval automatically.",
+    )
+    parser.add_argument(
+        "--parquet-retrain-scope",
+        choices=["all_train", "latest_run_only"],
+        default="all_train",
+        help="Which portion of the parquet to use for continuing training:\n"
+             "  all_train       = all rows where split == 'train' (cumulative, default)\n"
+             "  latest_run_only = only rows where pipeline_run_date == latest (delta only)",
     )
     parser.add_argument(
         "--old-model",
@@ -275,19 +296,44 @@ def main() -> None:
     print(f"Loading old model from {old_model_path}...", flush=True)
     old_pipeline: Pipeline = joblib.load(old_model_path)
 
-    # ---- Load validation set ----
-    print(f"Loading validation CSV: {args.val_csv}", flush=True)
-    val_frame = prepare_frame(load_csv(args.val_csv), config)
     target = config["dataset"]["target_column"]
+
+    # ──────────────────────────────────────────────────────────────────
+    # DATA SOURCE BRANCH — parquet (preferred) OR legacy CSV pair
+    # ──────────────────────────────────────────────────────────────────
+    if args.parquet_path and (args.new_data_csv or args.val_csv):
+        raise SystemExit("Use either --parquet-path OR (--new-data-csv + --val-csv), not both.")
+
+    pipeline_run_date_loaded = None
+    if args.parquet_path:
+        print(f"\n=== Loading parquet source: {args.parquet_path} ===", flush=True)
+        p_bundle = load_and_split_parquet(args.parquet_path, config)
+        pipeline_run_date_loaded = p_bundle.pipeline_run_date
+        raw_train = p_bundle.train_frame
+        raw_eval = p_bundle.eval_frame
+
+        # Retrain-scope selector: cumulative train split vs latest-run delta only.
+        if args.parquet_retrain_scope == "latest_run_only":
+            print(f"[retrain] --parquet-retrain-scope=latest_run_only → "
+                  f"filtering to rows with latest pipeline_run_date only.", flush=True)
+            raw_train = filter_latest_pipeline_date(raw_train)
+
+        # Push both frames through the standard feature pipeline
+        new_frame = prepare_frame(raw_train, config)
+        val_frame = prepare_frame(raw_eval, config)
+    else:
+        if not (args.new_data_csv and args.val_csv):
+            raise SystemExit("Provide either --parquet-path, or both --new-data-csv and --val-csv.")
+        print(f"Loading validation CSV: {args.val_csv}", flush=True)
+        val_frame = prepare_frame(load_csv(args.val_csv), config)
+        print(f"Loading NEW training CSV: {args.new_data_csv}", flush=True)
+        new_frame = prepare_frame(load_csv(args.new_data_csv), config)
+
     val_target = val_frame[target].astype(int)
     val_features_raw = val_frame.drop(columns=[target], errors="ignore")
-    # Drop any object cols leftover
     obj_cols = [c for c in val_features_raw.columns if val_features_raw[c].dtype == object]
     val_features_raw = val_features_raw.drop(columns=obj_cols, errors="ignore")
 
-    # ---- Load new training data ----
-    print(f"Loading NEW training CSV: {args.new_data_csv}", flush=True)
-    new_frame = prepare_frame(load_csv(args.new_data_csv), config)
     new_target = new_frame[target].astype(int)
     new_features_raw = new_frame.drop(columns=[target], errors="ignore")
     obj_cols = [c for c in new_features_raw.columns if new_features_raw[c].dtype == object]
@@ -301,6 +347,8 @@ def main() -> None:
             "The pipeline must have a ColumnTransformer/preprocessor with "
             "feature_names_in_ attribute."
         )
+    if pipeline_run_date_loaded:
+        print(f"[retrain] Parquet pipeline_run_date: {pipeline_run_date_loaded}", flush=True)
     print(f"Aligning features to old model's {len(expected)} columns...", flush=True)
     val_features = align_features(val_features_raw, expected)
     new_features = align_features(new_features_raw, expected)
@@ -382,7 +430,16 @@ def main() -> None:
             "code_version": get_git_sha(),
         })
         mlflow.log_params(flatten_dict({"candidate": candidate_cfg}))
-        mlflow.log_param("retrain.new_data_csv", args.new_data_csv)
+        if args.parquet_path:
+            mlflow.log_param("retrain.source_type", "parquet")
+            mlflow.log_param("retrain.parquet_path", args.parquet_path)
+            mlflow.log_param("retrain.parquet_retrain_scope", args.parquet_retrain_scope)
+            if pipeline_run_date_loaded:
+                mlflow.log_param("retrain.pipeline_run_date", pipeline_run_date_loaded)
+        else:
+            mlflow.log_param("retrain.source_type", "csv")
+            mlflow.log_param("retrain.new_data_csv", args.new_data_csv)
+            mlflow.log_param("retrain.val_csv", args.val_csv)
         mlflow.log_param("retrain.old_model_path", str(old_model_path))
         mlflow.log_param("retrain.additional_rounds", args.additional_rounds)
         mlflow.log_param("retrain.improvement_threshold", args.improvement_threshold)

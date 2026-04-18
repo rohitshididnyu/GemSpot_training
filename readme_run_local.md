@@ -221,6 +221,211 @@ docker run --rm -v "$(pwd):/app" -w /app \
 
 ---
 
+## 🧊 Parquet / MinIO Datalake Workflow 🆕
+
+In production the training data doesn't live as CSVs — it lives as **parquet files** inside an Iceberg table on MinIO:
+
+```
+s3://agent-datalake/iceberg/adventurelog.db/training_data/data/
+```
+
+The upstream `batch_pipeline` job does the following every run:
+1. Reads last week's accumulated training set
+2. Appends the week's newly-collected rows
+3. Re-computes a chronological `split` column (`train` / `eval`) so that
+   **eval rows are always the most recent** — this prevents data leakage
+4. Writes the whole thing as a new parquet file with a unique name like
+   `00000-0-<uuid>.parquet`
+
+### 📥 Schema of the parquet (what the pipeline produces)
+
+| Column | Canonical equivalent used by our models |
+|---|---|
+| `user_id` | `user_id` |
+| `location_id` | → renamed to `gmap_id` |
+| `user_total_visits` | `user_total_visits` |
+| `location_avg_rating` | → renamed to `avg_rating` |
+| `location_popularity` | `location_popularity` |
+| `user_personal_preferences` | `user_personal_preferences` |
+| `location_vibe_tags` | → renamed to `destination_vibe_tag` |
+| `location_category_encoded` | → renamed to `category_encoded` |
+| `will_visit` | `will_visit` (target) |
+| `split` | train/eval partition flag (dropped from features) |
+| `pipeline_run_date` | metadata, logged to MLflow (dropped from features) |
+| `snapshot_id` | metadata (dropped) |
+
+The renames happen automatically via `configs/candidates.yaml → column_rename`.
+
+### 🧠 Where does the parquet file come from?
+
+| Environment | Source |
+|---|---|
+| **Local (this laptop)** | `data/demo/00000-0-*.parquet` (latest by mtime) |
+| **Production (Chameleon)** | `s3://agent-datalake/iceberg/adventurelog.db/training_data/data/` (latest by S3 `LastModified`) |
+
+Both are handled by the same `--parquet-path` flag — the script figures out which one you mean.
+
+### 🚀 Train from parquet (local)
+
+```bash
+cd "/Users/rohitshidid/Documents/New project"
+
+# The directory form — picks the most recent .parquet automatically
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/train.py \
+    --config       configs/candidates.yaml \
+    --parquet-path data/demo/ \
+    --artifact-dir artifacts/models
+```
+
+Or point at a specific file:
+
+```bash
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/train.py \
+    --config       configs/candidates.yaml \
+    --parquet-path data/demo/00000-0-d1e71472-fd9a-452e-9b9c-ea9388c6e209.parquet
+```
+
+### 🚀 Train from parquet (production, MinIO)
+
+```bash
+export AWS_ACCESS_KEY_ID=<minio_key>
+export AWS_SECRET_ACCESS_KEY=<minio_secret>
+export AWS_ENDPOINT_URL=http://<minio-host>:9000
+export AWS_REGION=us-east-1
+
+# Run with AWS credentials injected, and pip install s3 dependencies automatically
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  -e AWS_ENDPOINT_URL=$AWS_ENDPOINT_URL \
+  -e AWS_REGION=$AWS_REGION \
+  gemspot-train \
+  bash -c "pip install --no-cache-dir boto3 s3fs && python3 src/train.py \
+    --config       configs/candidates.yaml \
+    --parquet-path s3://agent-datalake/iceberg/adventurelog.db/training_data/data/"
+```
+
+### 🔁 Retrain from parquet (local)
+
+All decision knobs shown explicitly (even the ones equal to argparse defaults)
+so you can tune them without reading the Python source:
+
+```bash
+# Default: use ALL rows where split == 'train' (cumulative set)
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/retrain.py \
+    --config       configs/candidates.yaml \
+    --candidate    xgboost_v2 \
+    --parquet-path data/demo/ \
+    --old-model    artifacts/models/xgboost_v2.joblib \
+    --parquet-retrain-scope all_train \
+    --additional-rounds     300 \
+    --primary-metric        roc_auc \
+    --improvement-threshold 0.001
+```
+
+Use **only the new week's rows** instead of the cumulative set:
+
+```bash
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/retrain.py \
+    --config       configs/candidates.yaml \
+    --candidate    xgboost_v2 \
+    --parquet-path data/demo/ \
+    --parquet-retrain-scope latest_run_only \
+    --old-model    artifacts/models/xgboost_v2.joblib \
+    --additional-rounds     300 \
+    --primary-metric        roc_auc \
+    --improvement-threshold 0.001
+```
+
+#### What each retrain flag controls
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--parquet-retrain-scope` | `all_train` | `all_train` = use every `split=='train'` row (cumulative). `latest_run_only` = only the latest `pipeline_run_date` delta. |
+| `--additional-rounds` | `50` | How many new boosting trees XGBoost adds on top of the old booster. Low values (50) barely move the needle; use **300** for a real retrain. |
+| `--primary-metric` | `roc_auc` | Which metric the keep/reject gate compares. Options: `roc_auc`, `f1`, `accuracy`, `average_precision`. |
+| `--improvement-threshold` | `0.001` | Minimum Δ in the primary metric to accept the new model. Raise to `0.005`–`0.01` if you see the train/eval distributions are very different (e.g. parquet has train=83% pos / eval=48% pos — small ROC-AUC swings are noise). |
+
+### 🔁 Retrain from parquet (production, MinIO)
+
+```bash
+export AWS_ACCESS_KEY_ID=<minio_key>
+export AWS_SECRET_ACCESS_KEY=<minio_secret>
+export AWS_ENDPOINT_URL=http://<minio-host>:9000
+export AWS_REGION=us-east-1
+
+# Run with AWS credentials injected, and pip install s3 dependencies automatically
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  -e AWS_ENDPOINT_URL=$AWS_ENDPOINT_URL \
+  -e AWS_REGION=$AWS_REGION \
+  gemspot-train \
+  bash -c "pip install --no-cache-dir boto3 s3fs && python3 src/retrain.py \
+    --config       configs/candidates.yaml \
+    --candidate    xgboost_v2 \
+    --parquet-path s3://agent-datalake/iceberg/adventurelog.db/training_data/data/ \
+    --old-model    artifacts/models/xgboost_v2.joblib \
+    --improvement-threshold 0.001"
+```
+
+### 🎯 Which data should the retrain actually use?
+
+You asked this directly. Here's the decision tree:
+
+| Scope flag | What it uses | When to pick it |
+|---|---|---|
+| `all_train` (default) | **All rows where `split=='train'`** (whole cumulative history) | Weekly full retrain — safest, highest quality, matches the "train on everything you know" philosophy |
+| `latest_run_only` | **Only rows where `pipeline_run_date == latest`** (just this week's delta) | Fast incremental learning; use when the weekly batch is large and you want the fastest possible update |
+
+**Our default is `all_train`.** Here's why:
+
+1. **XGBoost's incremental mode (`xgb_model=old_booster`) already reuses the old trees** — feeding it the full `split=='train'` set doesn't re-learn them from scratch, it just grows new trees that further reduce residual error over the whole history. This is both fast AND thorough.
+
+2. **Fresh-only training (`latest_run_only`) risks catastrophic forgetting** — the new trees would only see this week's data, so the booster might optimize for the delta at the expense of accuracy on older examples.
+
+3. **The parquet is reasonably small (~50k rows right now)** — the speed difference between "all train" and "latest only" is seconds.
+
+4. **The `split=='eval'` rows are the pipeline's chronologically newest slice**, specifically held out by the upstream pipeline to prevent data leakage. We always use them (and only them) to score old vs new.
+
+If you ever see retrain's ROC-AUC drop because the eval class balance is very different from the train class balance (e.g. train=83% positive, eval=48% positive like in this parquet), that's a sign to:
+- Re-visit the pipeline's split strategy upstream, OR
+- Use a calibration-aware metric like `average_precision` as the gate (`--primary-metric average_precision`).
+
+---
+
 ## 🐳 Option A — Local Run with Docker (Recommended)
 
 ### 1. Build the image (one-time)

@@ -5,17 +5,17 @@ dataset:
 
   # ──────────────────────────────────────────────────────────────────────
   # CANONICAL SCHEMA — the single source of truth.
-  # Every CSV used for training / retraining MUST have EXACTLY these 10
-  # columns. No more, no less. data.py enforces this:
+  # Every input (CSV or parquet) must boil down to EXACTLY these 9 columns
+  # after the `column_rename` map is applied.
   #   - Missing columns → hard error
   #   - Extra columns   → silently dropped with a warning
-  # This prevents schema drift between old CSV (`category`), new CSV
-  # (`price`), and any future files.
+  # (Note: `time` was removed because the parquet feed from the
+  # `batch_pipeline` does not produce it. It's not strongly predictive
+  # and caused schema mismatches across sources.)
   # ──────────────────────────────────────────────────────────────────────
   canonical_columns:
     - user_id
     - gmap_id
-    - time
     - category_encoded
     - avg_rating
     - location_popularity
@@ -23,6 +23,28 @@ dataset:
     - user_total_visits
     - user_personal_preferences
     - will_visit
+
+  # Column rename map applied BEFORE canonical enforcement.
+  # This bridges the MinIO/Iceberg parquet schema (location_*) to the
+  # historical CSV schema used by our trained models.
+  column_rename:
+    location_id: gmap_id
+    location_avg_rating: avg_rating
+    location_vibe_tags: destination_vibe_tag
+    location_category_encoded: category_encoded
+
+  # Meta columns present in parquet feeds but NOT features.
+  # They are dropped silently by the schema enforcer (non-canonical extras).
+  # Listed here only for documentation.
+  # - split              (used by parquet_loader for train/eval partition)
+  # - pipeline_run_date
+  # - snapshot_id
+
+  # Column that holds the pre-computed train/eval flag in parquet inputs.
+  # When present, the loader uses it INSTEAD of --cutoff / --train-pct.
+  split_column: split
+  split_train_value: train
+  split_eval_value:  eval
 
   # Columns removed from feature matrix before training.
   # All IDs must be here — they are identifiers, not predictors.
@@ -35,7 +57,6 @@ dataset:
     - avg_rating
     - location_popularity
     - user_total_visits
-    - time
 
   # List-encoded string columns -> exploded into N individual numeric columns
   list_encoded_features:
@@ -105,4 +126,5 @@ candidates:
       reg_lambda: 1.5
       random_state: 42
       n_jobs: -1
+      scale_pos_weight: 0.2 
       
