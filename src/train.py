@@ -13,7 +13,11 @@ import numpy as np
 import yaml
 
 from gemspot_training.data import make_dataset_bundle, make_dataset_bundle_from_parquet
-from gemspot_training.training import build_pipeline, compute_binary_metrics
+from gemspot_training.training import (
+    build_pipeline,
+    compute_binary_metrics,
+    evaluate_quality_gates,
+)
 from gemspot_training.utils import (
     collect_environment_info,
     ensure_dir,
@@ -72,9 +76,24 @@ def safe_metric(value: float) -> float | None:
     return float(value)
 
 
-def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_dir: Path) -> None:
+def train_candidate(
+    candidate_cfg: dict,
+    config: dict,
+    dataset_bundle,
+    artifact_dir: Path,
+    baseline_metrics_cache: dict,
+) -> None:
+    """Train, evaluate, and (only if quality gates pass) register a candidate.
+
+    `baseline_metrics_cache` is a shared dict that gets populated the first
+    time the baseline candidate is trained. Subsequent candidates read it
+    to evaluate the `beat_baseline` gate. This is why the baseline MUST be
+    listed first in the `candidates` section of the config.
+    """
     tracking_cfg = config.get("tracking", {})
     run_prefix = tracking_cfg.get("run_name_prefix", "gemspot")
+    gates_cfg = config.get("quality_gates", {}) or {}
+    exempt_names = set(gates_cfg.get("exempt", []) or [])
 
     feature_columns = list(dataset_bundle.train_features.columns)
     pipeline = build_pipeline(candidate_cfg, feature_columns)
@@ -123,10 +142,66 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
         }
         mlflow.log_metrics(clean_metrics)
 
-        artifact_path = artifact_dir / f"{candidate_cfg['name']}.joblib"
-        joblib.dump(pipeline, artifact_path)
-        mlflow.log_artifact(str(artifact_path), artifact_path="exported_models")
-        mlflow.sklearn.log_model(pipeline, artifact_path="model")
+        # ──────────────────────────────────────────────────────────────
+        # QUALITY GATE EVALUATION
+        # ──────────────────────────────────────────────────────────────
+        # If this candidate IS the baseline, stash its metrics so the
+        # next candidates can compare against it.
+        if candidate_cfg["name"] in exempt_names:
+            baseline_metrics_cache.update(clean_metrics)
+
+        gate_result = evaluate_quality_gates(
+            candidate_name=candidate_cfg["name"],
+            candidate_metrics=clean_metrics,
+            baseline_metrics=baseline_metrics_cache or None,
+            gates_cfg=gates_cfg,
+        )
+
+        if gate_result["exempt"]:
+            gate_tag = "exempt"
+        elif gate_result["passed"]:
+            gate_tag = "passed"
+        else:
+            gate_tag = "failed"
+
+        mlflow.set_tag("quality_gate", gate_tag)
+        mlflow.log_text(
+            json.dumps(gate_result, indent=2),
+            "quality_gate_report.json",
+        )
+        for failure in gate_result["failures"]:
+            print(f"   [gate] FAIL: {failure}", flush=True)
+
+        # ──────────────────────────────────────────────────────────────
+        # MODEL REGISTRATION — gated by the decision above
+        # ──────────────────────────────────────────────────────────────
+        if gate_result["passed"]:
+            # Passed: save to canonical dir AND register via log_model.
+            artifact_path = artifact_dir / f"{candidate_cfg['name']}.joblib"
+            joblib.dump(pipeline, artifact_path)
+            mlflow.log_artifact(str(artifact_path), artifact_path="exported_models")
+            mlflow.sklearn.log_model(pipeline, artifact_path="model")
+            print(f"   [gate] {gate_tag.upper()} — registered as {artifact_path}", flush=True)
+        else:
+            # Failed: save to _rejected with JSON sidecar. DO NOT register.
+            rejected_dir = ensure_dir(artifact_dir / "_rejected")
+            artifact_path = rejected_dir / f"{candidate_cfg['name']}.joblib"
+            joblib.dump(pipeline, artifact_path)
+
+            reject_info = {
+                "candidate": candidate_cfg["name"],
+                "kind": candidate_cfg["kind"],
+                "metrics": clean_metrics,
+                "gate_result": gate_result,
+                "reason": "Failed one or more quality gates — see 'failures'.",
+            }
+            reject_info_path = rejected_dir / f"{candidate_cfg['name']}.rejection.json"
+            with open(reject_info_path, "w", encoding="utf-8") as handle:
+                json.dump(reject_info, handle, indent=2)
+
+            mlflow.log_artifact(str(artifact_path), artifact_path="rejected_models")
+            mlflow.log_artifact(str(reject_info_path), artifact_path="rejected_models")
+            print(f"   [gate] FAILED — saved to {artifact_path} (NOT registered)", flush=True)
 
         # Save reference statistics for inference-time drift detection
         feature_columns = list(dataset_bundle.val_features.columns)
@@ -148,6 +223,9 @@ def train_candidate(candidate_cfg: dict, config: dict, dataset_bundle, artifact_
             "kind": candidate_cfg["kind"],
             "notes": candidate_cfg.get("notes", ""),
             "metrics": clean_metrics,
+            "quality_gate": gate_tag,
+            "gate_failures": gate_result["failures"],
+            "registered": gate_result["passed"] and not gate_result["exempt"],
             "artifact_path": str(artifact_path),
         }
         mlflow.log_text(json.dumps(summary, indent=2), "run_summary.json")
@@ -188,10 +266,33 @@ def main() -> None:
             raise SystemExit("Provide either --parquet-path, or both --train-csv and --val-csv.")
         dataset_bundle = make_dataset_bundle(args.train_csv, args.val_csv, config)
 
+    # Shared cache — populated by the baseline run, read by every non-exempt
+    # candidate when evaluating the `beat_baseline` quality gate. This is
+    # why the baseline MUST appear first in the `candidates:` list.
+    baseline_metrics_cache: dict = {}
+    gates_cfg = config.get("quality_gates", {}) or {}
+    exempt_names = list(gates_cfg.get("exempt", []) or [])
+    if exempt_names:
+        candidate_names = [c["name"] for c in config["candidates"]]
+        for ex in exempt_names:
+            if ex in candidate_names and candidate_names.index(ex) != 0:
+                print(
+                    f"[WARN] Exempt candidate '{ex}' is not first in the config; "
+                    f"baseline metrics may not be available when later candidates "
+                    f"are gated. Move '{ex}' to the top of `candidates:`.",
+                    flush=True,
+                )
+
     for candidate_cfg in config["candidates"]:
         try:
             print(f"\n>>> Starting candidate: {candidate_cfg['name']} ({candidate_cfg['kind']})", flush=True)
-            train_candidate(candidate_cfg, config, dataset_bundle, artifact_dir)
+            train_candidate(
+                candidate_cfg,
+                config,
+                dataset_bundle,
+                artifact_dir,
+                baseline_metrics_cache,
+            )
             print(f">>> Finished candidate: {candidate_cfg['name']}\n", flush=True)
         except Exception as e:
             print(f">>> ERROR training {candidate_cfg['name']}: {e}", flush=True)

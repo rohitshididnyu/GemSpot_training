@@ -577,6 +577,88 @@ mlruns/                            ← MLflow tracking store
 
 ---
 
+## 🛡️ Evaluation & Quality Gates (first-time training)
+
+**Every** model that `src/train.py` trains is **tracked** in MLflow — params, metrics, artifacts, tags. But a model is only **registered** (saved to `artifacts/models/<name>.joblib` and logged via `mlflow.sklearn.log_model`) if it passes the quality gates defined in `configs/candidates.yaml → quality_gates`. Failed candidates are written to `artifacts/models/_rejected/` with a JSON sidecar explaining why, and are **not** promoted.
+
+### Why these specific metrics
+
+`will_visit` is binary classification feeding a downstream recommendation ranker on a dataset with significant class imbalance (observed 83% positive in the parquet train split vs 48% in eval). The gate logic is designed around that reality:
+
+| Metric | Role | Rationale |
+|---|---|---|
+| **`roc_auc`** (primary) | main quality gate | Threshold-independent → honest under class imbalance. The ranker consumes probabilities, not 0/1 labels, so ranking quality is what matters. |
+| **`recall`** | safety floor | A recommender that's too timid (never says "yes") is useless even if it's precise. We require recall ≥ 0.30. |
+| `precision`, `f1` | logged, not gated | Useful to report, but sensitive to the decision threshold and to class ratio drift between train and eval. |
+| `accuracy` | logged, not gated | Misleading under imbalance (e.g., "always predict 1" scored 83% accuracy on our train distribution). |
+| `average_precision` | logged, not gated | Complements ROC-AUC; useful for model comparison but not the gate. |
+| `train_seconds`, `rows_per_second` | logged | Training-cost metrics for capacity planning. |
+
+### The three gates (config → `quality_gates`)
+
+```yaml
+quality_gates:
+  hard_minimums:
+    roc_auc: 0.55      # ≥ 0.55 forbids near-random rankers (0.50 = coin flip)
+    recall:  0.30      # ≥ 0.30 forbids "predict 0 for everything" degenerate models
+  beat_baseline:
+    metric: roc_auc
+    min_delta: 0.02    # must beat DummyClassifier by ≥ 2 ROC-AUC points
+  exempt:
+    - baseline         # the dummy itself is a reference, never a product
+```
+
+1. **Hard minimums** — absolute floors. Catches pathologies like a broken preprocessor that produces constant predictions, or a schema flip that scrambled the feature order.
+2. **`beat_baseline`** — every non-exempt candidate must beat the dummy classifier by at least `min_delta` ROC-AUC points. A model that can't beat "always predict majority class" has no business being served.
+3. **`exempt`** — the `baseline` candidate itself is always registered so subsequent candidates can compare to it. It's a reference, not a product.
+
+> ⚠️ **The baseline MUST appear first in `candidates:`.** Its metrics are cached at training time and read by later candidates when evaluating the `beat_baseline` gate. `train.py` prints a warning if the config violates this ordering.
+
+### What gets logged to MLflow for every run
+
+Whether a candidate passes or fails, MLflow captures:
+
+- Every metric in `compute_binary_metrics()` (numeric signal)
+- A **`quality_gate`** tag = `passed` | `failed` | `exempt` (filterable in the UI)
+- A **`quality_gate_report.json`** artifact containing the full decision, including which gates failed and the baseline-comparison delta
+- A **`run_summary.json`** artifact including the `"registered"` boolean and the final `artifact_path`
+
+Search the MLflow UI with `tags.quality_gate = "failed"` to list every rejected candidate across runs.
+
+### What gets saved to disk
+
+| Gate result | Model file location | Sidecar |
+|---|---|---|
+| **passed** | `artifacts/models/<name>.joblib` | — |
+| **failed** | `artifacts/models/_rejected/<name>.joblib` | `artifacts/models/_rejected/<name>.rejection.json` |
+| **exempt** | `artifacts/models/<name>.joblib` | — (always registered) |
+
+### Quick sanity: how the gate looked on the parquet run
+
+```
+baseline (dummy)       → EXEMPT → registered (reference)
+hist_gradient_boosting → FAIL  (roc_auc=0.51 < 0.55; Δ vs baseline +0.01 < 0.02) → rejected
+xgboost_v1             → FAIL  (roc_auc=0.51 < 0.55; Δ vs baseline +0.01 < 0.02) → rejected
+xgboost_v2             → FAIL  (roc_auc=0.51 < 0.55; Δ vs baseline +0.01 < 0.02) → rejected
+```
+
+This is the gate behaving **correctly**. The parquet has a class-distribution shift between train (83% pos) and eval (48% pos) that no hyperparameter tuning alone can close, so every candidate legitimately fails. The gate is refusing to ship a model that's barely better than random — exactly its job.
+
+On CSV data where the same candidates historically hit ROC-AUC ≈ 0.80, the gate passes them without intervention.
+
+### Tuning the gates
+
+Edit the `quality_gates` block in `configs/candidates.yaml`. Typical knobs:
+
+- **Stricter deploy bar** → raise `hard_minimums.roc_auc` to 0.65 or 0.70.
+- **Faster iteration, more lenient** → drop `beat_baseline.min_delta` to 0.005.
+- **Different primary metric** → change `beat_baseline.metric` to `average_precision` if precision-recall area matters more for your use case.
+- **Add a new gate** → add another key under `hard_minimums`, e.g. `precision: 0.50`.
+
+No code change is required — `evaluate_quality_gates()` reads whatever is in the config.
+
+---
+
 ## 🎯 Summary of the Retrain Gate Logic
 
 ```

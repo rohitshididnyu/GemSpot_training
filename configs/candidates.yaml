@@ -80,6 +80,44 @@ tracking:
   registered_model_name: GemSpotWillVisit
   run_name_prefix: gemspot-will-visit
 
+# ────────────────────────────────────────────────────────────────────────
+# QUALITY GATES — enforced by src/train.py before a model is registered.
+#
+# A candidate is only saved to artifacts/models/<name>.joblib AND logged
+# via mlflow.sklearn.log_model(...) if ALL gates pass. Failed candidates
+# are saved to artifacts/models/_rejected/<name>.joblib with a JSON
+# sidecar describing why they failed, and are NOT registered.
+#
+# Rationale:
+#   primary metric: roc_auc
+#     - threshold-independent → honest measure under class imbalance
+#       (we have observed 83% positive train vs 48% positive eval).
+#     - the downstream recommendation ranker needs good RANKING, not
+#       just good threshold-0.5 classification.
+#   hard_minimums:
+#     - roc_auc >= 0.55  → reject near-random rankers (0.50 = coin flip).
+#     - recall  >= 0.30  → reject models that are too timid to be useful
+#       for a recall-first recommender ("find me places I'd visit").
+#   beat_baseline:
+#     - a candidate that cannot beat DummyClassifier has no business
+#       being served. min_delta=0.02 forces a non-trivial improvement
+#       (2 ROC-AUC points) so we don't register "marginally better"
+#       models.
+#   exempt:
+#     - [baseline] — the dummy candidate IS the reference and must
+#       always be trained+tracked so later candidates can compare
+#       against it. It is never promoted to production.
+# ────────────────────────────────────────────────────────────────────────
+quality_gates:
+  hard_minimums:
+    roc_auc: 0.55
+    recall: 0.30
+  beat_baseline:
+    metric: roc_auc
+    min_delta: 0.02
+  exempt:
+    - baseline
+
 candidates:
   # ---- BASELINE (naive lower-bound, required by rubric) ----
   - name: baseline
@@ -126,5 +164,5 @@ candidates:
       reg_lambda: 1.5
       random_state: 42
       n_jobs: -1
-      scale_pos_weight: 0.2 
+      #scale_pos_weight: 0.2 
       

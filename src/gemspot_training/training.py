@@ -99,3 +99,100 @@ def compute_binary_metrics(
         metrics["average_precision"] = float("nan")
 
     return metrics
+
+
+# ---------------------------------------------------------------------------
+# Quality gates for first-time training
+# ---------------------------------------------------------------------------
+#
+# A candidate is "registered" (saved to artifacts/models/<name>.joblib and
+# logged via mlflow.sklearn.log_model) ONLY if it passes every gate below.
+# Otherwise it is written to artifacts/models/_rejected/ with a JSON sidecar
+# explaining the failure, and NOT logged as a model artifact.
+#
+# The philosophy:
+#   - Hard minimums catch pathologies (near-random rankers, broken
+#     preprocessing that produced constant predictions, schema flips).
+#   - `beat_baseline` guarantees every served model strictly improves on
+#     the dumb `DummyClassifier` reference — a model that can't beat
+#     "always predict majority class" must not be deployed.
+#   - `exempt` lets the baseline itself skip the gates (it IS the
+#     reference, not a product).
+
+def evaluate_quality_gates(
+    candidate_name: str,
+    candidate_metrics: dict[str, float],
+    baseline_metrics: dict[str, float] | None,
+    gates_cfg: dict,
+) -> dict:
+    """Return a gate decision dict.
+
+    Result shape:
+        {
+          "passed":   bool,       # overall decision
+          "exempt":   bool,       # True if candidate is on the exempt list
+          "failures": list[str],  # human-readable reasons (empty if passed)
+          "baseline_comparison": dict | None,
+        }
+    """
+    exempt = gates_cfg.get("exempt", []) or []
+    if candidate_name in exempt:
+        return {
+            "passed": True,
+            "exempt": True,
+            "failures": [],
+            "baseline_comparison": None,
+        }
+
+    failures: list[str] = []
+
+    # --- Gate 1: hard minimum thresholds -----------------------------------
+    hard_minimums = gates_cfg.get("hard_minimums", {}) or {}
+    for metric_name, threshold in hard_minimums.items():
+        value = candidate_metrics.get(metric_name)
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            failures.append(f"{metric_name} is missing or NaN (threshold {threshold})")
+        elif value < threshold:
+            failures.append(
+                f"{metric_name}={value:.4f} below hard minimum {threshold}"
+            )
+
+    # --- Gate 2: must beat the dumb baseline -------------------------------
+    baseline_comparison = None
+    beat_cfg = gates_cfg.get("beat_baseline", {}) or {}
+    if beat_cfg and baseline_metrics:
+        metric_name = beat_cfg.get("metric", "roc_auc")
+        min_delta = float(beat_cfg.get("min_delta", 0.0))
+        cand_score = candidate_metrics.get(metric_name)
+        base_score = baseline_metrics.get(metric_name)
+        if (
+            cand_score is not None
+            and base_score is not None
+            and not (isinstance(cand_score, float) and np.isnan(cand_score))
+            and not (isinstance(base_score, float) and np.isnan(base_score))
+        ):
+            delta = cand_score - base_score
+            baseline_comparison = {
+                "metric": metric_name,
+                "candidate": cand_score,
+                "baseline": base_score,
+                "delta": delta,
+                "min_delta": min_delta,
+            }
+            if delta < min_delta:
+                failures.append(
+                    f"{metric_name} delta vs baseline {delta:+.4f} < "
+                    f"required min_delta={min_delta}"
+                )
+    elif beat_cfg and not baseline_metrics:
+        failures.append(
+            "beat_baseline gate is configured but no baseline metrics were "
+            "captured — train the baseline candidate before other candidates."
+        )
+
+    return {
+        "passed": len(failures) == 0,
+        "exempt": False,
+        "failures": failures,
+        "baseline_comparison": baseline_comparison,
+    }
