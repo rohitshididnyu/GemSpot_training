@@ -153,19 +153,58 @@ After a 3-way split, the workflow becomes:
 
 ```bash
 # 1. Tune / compare candidates on VAL
-python3 src/train.py \
-  --config  configs/candidates.yaml \
-  --train-csv data/demo/gemspot_train.csv \
-  --val-csv   data/demo/gemspot_val.csv
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/train.py \
+    --config       configs/candidates.yaml \
+    --train-csv    data/demo/gemspot_train.csv \
+    --val-csv      data/demo/gemspot_val.csv \
+    --artifact-dir artifacts/models
+```
 
+```bash
 # 2. FINAL evaluation on TEST (only once the best candidate is chosen)
-python3 src/retrain.py \
-  --config    configs/candidates.yaml \
-  --candidate xgboost_v2 \
-  --val-csv   data/demo/gemspot_test.csv \
-  --new-data-csv data/demo/gemspot_train.csv \
-  --old-model artifacts/models/xgboost_v2.joblib \
-  --improvement-threshold 0.001
+# Note: We use retrain.py here to get the "OLD model" metric on the test setup. 
+# We just pass the already-seen train-csv as the "new data" to satisfy the script.
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/retrain.py \
+    --config       configs/candidates.yaml \
+    --candidate    xgboost_v2 \
+    --val-csv      data/demo/gemspot_test.csv \
+    --new-data-csv data/demo/gemspot_train.csv \
+    --additional-rounds     300 \
+    --old-model    artifacts/models/xgboost_v2.joblib \
+    --improvement-threshold 0.001
+```
+
+```bash
+# 3. INCREMENTAL RETRAINING on fresh data
+# When real new data arrives (e.g. next month's data), you retrain the old model
+# on the truly NEW data, but use your original VAL set to decide if it improved.
+# The TEST set remains locked away for future unbiased evaluations.
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  -e PYTHONPATH=/app/src \
+  -e MLFLOW_TRACKING_URI=file:///app/mlruns \
+  gemspot-train \
+  python3 src/retrain.py \
+    --config       configs/candidates.yaml \
+    --candidate    xgboost_v2 \
+    --val-csv      data/demo/gemspot_val.csv \
+    --additional-rounds     300 \
+    --new-data-csv data/demo/initial_training_set_new.csv \
+    --old-model    artifacts/models/xgboost_v2.joblib \
+    --improvement-threshold 0.001
 ```
 
 ### Optional — Downsample for small laptops
@@ -294,7 +333,8 @@ docker run --rm \
   gemspot-train \
   python3 src/train.py \
     --config       configs/candidates.yaml \
-    --parquet-path data/demo/00000-0-d1e71472-fd9a-452e-9b9c-ea9388c6e209.parquet
+    --parquet-path data/demo/00000-0-d1e71472-fd9a-452e-9b9c-ea9388c6e209.parquet \
+    --artifact-dir artifacts/models
 ```
 
 ### 🚀 Train from parquet (production, MinIO)
